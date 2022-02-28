@@ -104,6 +104,22 @@ namespace ompl
                 }
             }
 
+            void configurePlannerCollisionRange(double &range, const std::string &context)
+            {
+                if (range < std::numeric_limits<double>::epsilon())
+                {
+                    base::SpaceInformationPtr si = wsi_.lock();
+                    if (si)
+                    {
+                        range = si->getMaximumExtent() * magic::MAX_COLLISION_CHECK_LENGTH_AS_SPACE_EXTENT_FRACTION;
+                        OMPL_DEBUG("%sPlanner collision range detected to be %lf", context.c_str(), range);
+                    }
+                    else
+                        OMPL_ERROR("%sUnable to detect planner collision range. SpaceInformation instance has expired.",
+                                   context.c_str());
+                }
+            }
+
             void configureProjectionEvaluator(base::ProjectionEvaluatorPtr &proj, const std::string &context)
             {
                 base::SpaceInformationPtr si = wsi_.lock();
@@ -226,6 +242,12 @@ void ompl::tools::SelfConfig::configurePlannerRange(double &range)
 {
     std::lock_guard<std::mutex> iLock(impl_->lock_);
     impl_->configurePlannerRange(range, context_);
+}
+
+void ompl::tools::SelfConfig::configurePlannerCollisionRange(double &range)
+{
+    std::lock_guard<std::mutex> iLock(impl_->lock_);
+    impl_->configurePlannerCollisionRange(range, context_);
 }
 
 void ompl::tools::SelfConfig::configureProjectionEvaluator(base::ProjectionEvaluatorPtr &proj)

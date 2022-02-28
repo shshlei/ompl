@@ -32,7 +32,7 @@
  *  POSSIBILITY OF SUCH DAMAGE.
  *********************************************************************/
 
-/* Author: Ioan Sucan, Jonathan Gammell */
+/* Author: Ioan Sucan, Jonathan Gammell, Shi Shenglei */
 
 #ifndef OMPL_UTIL_RANDOM_NUMBERS_
 #define OMPL_UTIL_RANDOM_NUMBERS_
@@ -45,6 +45,7 @@
 
 #include "ompl/config.h"
 #include "ompl/util/ProlateHyperspheroid.h"
+#include "ompl/util/ProlateHyperspheroidRing.h"
 
 namespace ompl
 {
@@ -153,6 +154,9 @@ namespace ompl
          * expected to already exist. */
         void uniformInBall(double r, std::vector<double> &v);
 
+        /** \brief Uniform random sampling of the content of an n-ball ring, where r2 > r1. */
+        void uniformInBallRing(double r1, double r2, std::vector<double> &v);
+
         /** \brief Uniform random sampling of the surface of a prolate hyperspheroid, a special symmetric type of
         n-dimensional ellipse. The return variable \e value is expected to already exist.
         @par J. D. Gammell, T. D. Barfoot, S. S. Srinivasa, "Informed sampling for asymptotically optimal path planning."
@@ -173,6 +177,11 @@ namespace ompl
         <a href="https://www.youtube.com/watch?v=d7dX5MvDYTc">Illustration video</a>.
         <a href="https://www.youtube.com/watch?v=nsl-5MZfwu4">Short description video</a>. */
         void uniformProlateHyperspheroid(const std::shared_ptr<const ProlateHyperspheroid> &phsPtr, double value[]);
+
+        void uniformProlateHyperspheroidRingSurface(const std::shared_ptr<const ProlateHyperspheroidRing> &phsrPtr,
+                                                double value[]);
+
+        void uniformProlateHyperspheroidRing(const std::shared_ptr<const ProlateHyperspheroidRing> &phsrPtr, double value[]);
 
         /** \brief randomly rearrange elements in the range [first, last) */
         template <class RandomAccessIterator>

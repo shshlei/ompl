@@ -432,6 +432,13 @@ namespace ompl
             unsigned long int iterations_{0};
             /** \brief Best cost found so far by algorithm */
             base::Cost bestCost_{std::numeric_limits<double>::quiet_NaN()};
+
+            double oTime_{0};
+
+            std::string collisionCheckTimeProperty() const
+            {
+                return std::to_string(oTime_);
+            }
         };
     }
 }

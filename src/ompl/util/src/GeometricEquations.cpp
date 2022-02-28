@@ -32,7 +32,7 @@
 *  POSSIBILITY OF SUCH DAMAGE.
 *********************************************************************/
 
-/* Author: Jonathan Gammell*/
+/* Author: Jonathan Gammell, Shi Shenglei*/
 
 // This file's header
 #include "ompl/util/GeometricEquations.h"
@@ -90,4 +90,9 @@ double ompl::prolateHyperspheroidMeasure(unsigned int N, double dFoci, double dT
 
     // Finally return:
     return lmeas;
+}
+
+double ompl::prolateHyperspheroidRingMeasure(unsigned int N, double dFoci, double dTransverse, double expf)
+{
+    return (std::pow(expf, static_cast<double>(N)) - 1.0) * prolateHyperspheroidMeasure(N, dFoci, dTransverse);
 }

@@ -1018,6 +1018,13 @@ void ompl::base::CompoundStateSpace::enforceBounds(State *state) const
         components_[i]->enforceBounds(cstate->components[i]);
 }
 
+void ompl::base::CompoundStateSpace::enforceBoundsRandom(State *state) const
+{
+    auto *cstate = static_cast<CompoundState *>(state);
+    for (unsigned int i = 0; i < componentCount_; ++i)
+        components_[i]->enforceBoundsRandom(cstate->components[i]);
+}
+
 bool ompl::base::CompoundStateSpace::satisfiesBounds(const State *state) const
 {
     const auto *cstate = static_cast<const CompoundState *>(state);

@@ -32,7 +32,7 @@
  *  POSSIBILITY OF SUCH DAMAGE.
  *********************************************************************/
 
-/* Author: Ioan Sucan, Jonathan Gammell*/
+/* Author: Ioan Sucan, Jonathan Gammell, Shi Shenglei*/
 
 #include "ompl/util/RandomNumbers.h"
 #include "ompl/util/Exception.h"
@@ -304,9 +304,37 @@ void ompl::RNG::uniformInBall(double r, std::vector<double> &v)
     std::transform(v.begin(), v.end(), v.begin(), [radiusScale](double x) { return radiusScale * x; });
 }
 
+void ompl::RNG::uniformInBallRing(double r1, double r2, std::vector<double> &v)
+{
+    if (r2 < r1)
+    {
+        OMPL_ERROR("%g < %g", r2, r1);
+        throw Exception("The ball ring is error.");
+    }
+
+    // Draw a random point on the unit sphere
+    uniformNormalVector(v);
+
+    // Draw a random radius scale
+    double n = static_cast<double>(v.size());
+    double temp1 = uniformReal(0.0, 1.0);
+    double temp2 = 1.0 - temp1;
+    double temp  = temp1 * std::pow(r1, n) + 
+                   temp2 * std::pow(r2, n);
+    double radiusScale = std::pow(temp, 1.0 / n);
+
+    // Scale the point to sphere ring
+    std::transform(v.begin(), v.end(), v.begin(), [radiusScale](double x) { return radiusScale * x; });
+}
+
 void ompl::RNG::uniformProlateHyperspheroidSurface(const std::shared_ptr<const ProlateHyperspheroid> &phsPtr,
                                                    double value[])
 {
+    if (!phsPtr->isTransformUpToDate())
+    {
+        throw Exception("The transformation is not up to date in the PHS class. Has the transverse diameter been set?");
+    }
+
     // Variables
     // The spherical point as a std::vector
     std::vector<double> sphere(phsPtr->getDimension());
@@ -320,6 +348,11 @@ void ompl::RNG::uniformProlateHyperspheroidSurface(const std::shared_ptr<const P
 
 void ompl::RNG::uniformProlateHyperspheroid(const std::shared_ptr<const ProlateHyperspheroid> &phsPtr, double value[])
 {
+    if (!phsPtr->isTransformUpToDate())
+    {
+        throw Exception("The transformation is not up to date in the PHS class. Has the transverse diameter been set?");
+    }
+   
     // Variables
     // The spherical point as a std::vector
     std::vector<double> sphere(phsPtr->getDimension());
@@ -329,4 +362,51 @@ void ompl::RNG::uniformProlateHyperspheroid(const std::shared_ptr<const ProlateH
 
     // Transform to the PHS
     phsPtr->transform(&sphere[0], value);
+}
+
+void ompl::RNG::uniformProlateHyperspheroidRingSurface(const std::shared_ptr<const ProlateHyperspheroidRing> &phsrPtr,
+                                                       double value[])
+{
+    if (!phsrPtr->isTransformUpToDate())
+    {
+        throw Exception("The transformation is not up to date in the PHSr class. Has the transverse diameter been set?");
+    }
+
+    // Variables
+    // The spherical point as a std::vector
+    std::vector<double> sphere(phsrPtr->getDimension());
+
+    // Get a random point on the sphere
+    uniformNormalVector(sphere);
+
+    if(!phsrPtr->isProlateHyperspheroid())
+    {
+        double radiusScale = phsrPtr->getExternalExpansionFactor();
+        std::transform(sphere.begin(), sphere.end(), sphere.begin(), [radiusScale](double x) { return radiusScale * x; });
+    }
+
+    // Transform to the PHS
+    phsrPtr->transform(&sphere[0], value);
+}
+
+void ompl::RNG::uniformProlateHyperspheroidRing(const std::shared_ptr<const ProlateHyperspheroidRing> &phsrPtr,
+                                                double value[])
+{
+    if (!phsrPtr->isTransformUpToDate())
+    {
+        throw Exception("The transformation is not up to date in the PHSr class. Has the transverse diameter been set?");
+    }
+
+    // Variables
+    // The spherical point as a std::vector
+    std::vector<double> sphere(phsrPtr->getDimension());
+
+    // Get a random point in the sphere ring
+    if(phsrPtr->isProlateHyperspheroid())
+        uniformInBall(1.0, sphere);
+    else
+        uniformInBallRing(phsrPtr->getInternalExpansionFactor(), phsrPtr->getExternalExpansionFactor(), sphere);
+
+    // Transform to the PHS
+    phsrPtr->transform(&sphere[0], value);
 }

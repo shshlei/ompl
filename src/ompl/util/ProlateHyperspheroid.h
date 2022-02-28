@@ -66,6 +66,10 @@ namespace ompl
         /** \brief Set the transverse diameter of the PHS */
         void setTransverseDiameter(double transverseDiameter);
 
+        double getTransverseDiameter() const;
+            
+        bool isTransformUpToDate() const;
+
         /** \brief Transform a point from a sphere to PHS. The return variable \e phs is expected to already exist.  */
         void transform(const double sphere[], double phs[]) const;
 

@@ -57,15 +57,20 @@ ompl::base::GaussianValidStateSampler::GaussianValidStateSampler(const SpaceInfo
 
 bool ompl::base::GaussianValidStateSampler::sample(State *state)
 {
+    oTime_ = 0;
     bool result = false;
     unsigned int attempts = 0;
     State *temp = si_->allocState();
     do
     {
         sampler_->sampleUniform(state);
+        time::point starto = time::now();
         bool v1 = si_->isValid(state);
+        oTime_ += time::seconds(time::now() - starto);
         sampler_->sampleGaussian(temp, state, stddev_);
+        starto = time::now();
         bool v2 = si_->isValid(temp);
+        oTime_ += time::seconds(time::now() - starto);
         if (v1 != v2)
         {
             if (v2)
@@ -80,15 +85,20 @@ bool ompl::base::GaussianValidStateSampler::sample(State *state)
 
 bool ompl::base::GaussianValidStateSampler::sampleNear(State *state, const State *near, const double distance)
 {
+    oTime_ = 0;
     bool result = false;
     unsigned int attempts = 0;
     State *temp = si_->allocState();
     do
     {
         sampler_->sampleUniformNear(state, near, distance);
+        time::point starto = time::now();
         bool v1 = si_->isValid(state);
+        oTime_ += time::seconds(time::now() - starto);
         sampler_->sampleGaussian(temp, state, distance);
+        starto = time::now();
         bool v2 = si_->isValid(temp);
+        oTime_ += time::seconds(time::now() - starto);
         if (v1 != v2)
         {
             if (v2)

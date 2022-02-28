@@ -59,13 +59,16 @@ ompl::base::MaximizeClearanceValidStateSampler::~MaximizeClearanceValidStateSamp
 
 bool ompl::base::MaximizeClearanceValidStateSampler::sample(State *state)
 {
+    oTime_ = 0;
     unsigned int attempts = 0;
     bool valid = false;
     double dist = 0.0;
     do
     {
         sampler_->sampleUniform(state);
+        time::point starto = time::now();
         valid = si_->getStateValidityChecker()->isValid(state, dist);
+        oTime_ += time::seconds(time::now() - starto);
         ++attempts;
     } while (!valid && attempts < attempts_);
 
@@ -77,7 +80,9 @@ bool ompl::base::MaximizeClearanceValidStateSampler::sample(State *state)
         while (attempts < improveAttempts_)
         {
             sampler_->sampleUniform(work_);
+            time::point starto = time::now();
             validW = si_->getStateValidityChecker()->isValid(work_, distW);
+            oTime_ += time::seconds(time::now() - starto);
             ++attempts;
             if (validW && distW > dist)
             {
@@ -92,13 +97,16 @@ bool ompl::base::MaximizeClearanceValidStateSampler::sample(State *state)
 
 bool ompl::base::MaximizeClearanceValidStateSampler::sampleNear(State *state, const State *near, const double distance)
 {
+    oTime_ = 0;
     unsigned int attempts = 0;
     bool valid = false;
     double dist = 0.0;
     do
     {
         sampler_->sampleUniformNear(state, near, distance);
+        time::point starto = time::now();
         valid = si_->getStateValidityChecker()->isValid(state, dist);
+        oTime_ += time::seconds(time::now() - starto);
         ++attempts;
     } while (!valid && attempts < attempts_);
 
@@ -110,7 +118,9 @@ bool ompl::base::MaximizeClearanceValidStateSampler::sampleNear(State *state, co
         while (attempts < improveAttempts_)
         {
             sampler_->sampleUniformNear(work_, near, distance);
+            time::point starto = time::now();
             validW = si_->getStateValidityChecker()->isValid(work_, distW);
+            oTime_ += time::seconds(time::now() - starto);
             ++attempts;
             if (validW && distW > dist)
             {

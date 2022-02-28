@@ -96,6 +96,8 @@ namespace ompl
 
             void enforceBounds(State *state) const override;
 
+            void enforceBoundsRandom(State *state) const override;
+
             bool satisfiesBounds(const State *state) const override;
 
             unsigned int getSerializationLength() const override;

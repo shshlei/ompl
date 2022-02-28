@@ -555,6 +555,13 @@ namespace ompl
 
             /** \brief Whether to stop the planner as soon as the path changes. */
             bool stopOnSolutionChange_{false};
+
+            double oTime_{0};
+
+            std::string collisionCheckTimeProperty() const
+            {
+                return std::to_string(oTime_);
+            }
         };  // class BITstar
     }       // namespace geometric
 }  // namespace ompl

@@ -32,7 +32,7 @@
 *  POSSIBILITY OF SUCH DAMAGE.
 *********************************************************************/
 
-/* Author: Jonathan Gammell */
+/* Author: Jonathan Gammell, Shi Shenglei */
 
 #ifndef OMPL_UTIL_GEOMETRIC_EQUATIONS
 #define OMPL_UTIL_GEOMETRIC_EQUATIONS
@@ -50,6 +50,10 @@ namespace ompl
     /** \brief The Lebesgue measure (i.e., "volume") of an n-dimensional prolate hyperspheroid (a symmetric
      * hyperellipse) given as the distance between the foci and the transverse diameter */
     double prolateHyperspheroidMeasure(unsigned int N, double dFoci, double dTransverse);
-}  // ompl
 
+    /** \brief The Lebesgue measure (i.e., "volume") of an n-dimensional prolate hyperspheroid ring (a symmetric
+     * hyperellipse ring) given as the distance between the foci and the transverse diameter, and the expansion factor.
+     * The expansion factor \e expf is greater than one */
+    double prolateHyperspheroidRingMeasure(unsigned int N, double dFoci, double dTransverse, double expf);
+}  // ompl
 #endif

@@ -197,6 +197,17 @@ namespace ompl
                 return maxDistance_;
             }
 
+            void setMaxCollisionDistance(double distance)
+            {
+                maxCollisionDistance_ = distance;
+            }
+
+            /** \brief Get the range the planner is using */
+            double getMaxCollisionDistance() const
+            {
+                return maxCollisionDistance_;
+            }
+
             /** \brief Set the rewiring scale factor, s, such that r_rrg = s \times r_rrg* (or k_rrg = s \times k_rrg*)
              */
             void setRewireFactor(double rewireFactor)
@@ -403,6 +414,8 @@ namespace ompl
             /** \brief The maximum length of a motion to be added to a tree */
             double maxDistance_{0.};
 
+            double maxCollisionDistance_{0.};
+
             /** \brief The random number generator */
             RNG rng_;
 
@@ -466,6 +479,8 @@ namespace ompl
             /** \brief The number of attempts to make at informed sampling */
             unsigned int numSampleAttempts_{100u};
 
+            double oTime_{0};
+
             ///////////////////////////////////////
             // Planner progress property functions
             std::string numIterationsProperty() const
@@ -479,6 +494,10 @@ namespace ompl
             std::string numMotionsProperty() const
             {
                 return std::to_string(nn_->size());
+            }
+            std::string collisionCheckTimeProperty() const
+            {
+                return std::to_string(oTime_);
             }
         };
     }

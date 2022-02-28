@@ -84,6 +84,8 @@ namespace ompl
             /** \brief Compute what a good length for motion segments is */
             void configurePlannerRange(double &range);
 
+            void configurePlannerCollisionRange(double &range);
+
             /** \brief If \e proj is undefined, it is set to the default
                 projection reported by base::StateSpace::getDefaultProjection().
                 If no default projection is available either, an exception is thrown. */

@@ -60,6 +60,8 @@ namespace ompl
                 UNRECOGNIZED_GOAL_TYPE,
                 /// The planner failed to find a solution
                 TIMEOUT,
+                /// The prepare process success 
+                PREPARE_SUCCESS,
                 /// The planner found an approximate solution
                 APPROXIMATE_SOLUTION,
                 /// The planner found an exact solution

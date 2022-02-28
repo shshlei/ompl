@@ -42,6 +42,22 @@
 #include <limits>
 #include <cmath>
 
+double ompl::base::RealVectorStateSampler::sampleUniform(double low, double high)
+{
+    return rng_.uniformReal(low, high);
+}
+
+void ompl::base::RealVectorStateSampler::sampleUniform(State *state, unsigned int index)
+{
+    const unsigned int dim = space_->getDimension();
+    assert(index < dim);
+    (void) (dim);
+
+    const RealVectorBounds &bounds = static_cast<const RealVectorStateSpace *>(space_)->getBounds();
+    auto *rstate = static_cast<RealVectorStateSpace::StateType *>(state);
+    rstate->values[index] = rng_.uniformReal(bounds.low[index], bounds.high[index]);
+}
+
 void ompl::base::RealVectorStateSampler::sampleUniform(State *state)
 {
     const unsigned int dim = space_->getDimension();
@@ -194,6 +210,18 @@ void ompl::base::RealVectorStateSpace::enforceBounds(State *state) const
             rstate->values[i] = bounds_.high[i];
         else if (rstate->values[i] < bounds_.low[i])
             rstate->values[i] = bounds_.low[i];
+    }
+}
+
+void ompl::base::RealVectorStateSpace::enforceBoundsRandom(State *state) const
+{
+    RealVectorStateSampler sampler(this);
+
+    auto *rstate = static_cast<StateType *>(state);
+    for (unsigned int i = 0; i < dimension_; ++i)
+    {
+        if (rstate->values[i] > bounds_.high[i] || rstate->values[i] < bounds_.low[i])
+            rstate->values[i] = sampler.sampleUniform(bounds_.low[i], bounds_.high[i]);
     }
 }
 

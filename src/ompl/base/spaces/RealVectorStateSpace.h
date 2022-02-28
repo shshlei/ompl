@@ -56,6 +56,10 @@ namespace ompl
             {
             }
 
+            double sampleUniform(double low, double high);
+
+            void sampleUniform(State *state, unsigned int index);
+
             void sampleUniform(State *state) override;
             /** \brief Sample a state such that each component state[i] is
                 uniformly sampled from [near[i]-distance, near[i]+distance].
@@ -151,6 +155,8 @@ namespace ompl
 
             void enforceBounds(State *state) const override;
 
+            void enforceBoundsRandom(State *state) const override;
+
             bool satisfiesBounds(const State *state) const override;
 
             void copyState(State *destination, const State *source) const override;
@@ -195,6 +201,8 @@ namespace ompl
 
             /** \brief Map from names to index values for dimensions */
             std::map<std::string, unsigned int> dimensionIndex_;
+
+            RNG rng_;
 
         private:
             /** \brief The size of a state, in bytes */

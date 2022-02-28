@@ -261,6 +261,11 @@ namespace ompl
                 space_->enforceBounds(state->as<StateType>()->getState());
             }
 
+            void enforceBoundsRandom(State *state) const override
+            {
+                space_->enforceBoundsRandom(state->as<StateType>()->getState());
+            }
+
             bool satisfiesBounds(const State *state) const override
             {
                 return space_->satisfiesBounds(state->as<StateType>()->getState());

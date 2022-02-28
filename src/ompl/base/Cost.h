@@ -32,7 +32,7 @@
 *  POSSIBILITY OF SUCH DAMAGE.
 *********************************************************************/
 
-/* Author: Luis G. Torres, Ioan Sucan */
+/* Author: Luis G. Torres, Ioan Sucan, Shi Shenglei */
 
 #ifndef OMPL_BASE_COST_
 #define OMPL_BASE_COST_
@@ -50,6 +50,21 @@ namespace ompl
             /** \brief Construct cost with a specified value */
             explicit Cost(double v = 0.0) : v_(v)
             {
+            }
+
+            Cost(const Cost &cost)
+            {
+                v_ = cost.value();
+            }
+
+            Cost &operator=(const Cost& cost)
+            {
+                if (this != &cost)
+                {
+                    v_ = cost.value();
+                }
+        
+                return *this;
             }
 
             /** \brief The value of the cost */

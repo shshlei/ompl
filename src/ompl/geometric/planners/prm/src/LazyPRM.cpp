@@ -99,6 +99,7 @@ ompl::geometric::LazyPRM::LazyPRM(const base::SpaceInformationPtr &si, bool star
                                {
                                    return getEdgeCountString();
                                });
+    addPlannerProgressProperty("collision check time REAL", [this] { return collisionCheckTimeProperty(); });
 }
 
 ompl::geometric::LazyPRM::LazyPRM(const base::PlannerData &data, bool starStrategy)
@@ -270,6 +271,7 @@ void ompl::geometric::LazyPRM::clear()
         nn_->clear();
     clearQuery();
 
+    oTime_ = 0;
     componentCount_ = 0;
     iterations_ = 0;
     bestCost_ = base::Cost(std::numeric_limits<double>::quiet_NaN());
@@ -529,8 +531,13 @@ ompl::base::PathPtr ompl::geometric::LazyPRM::constructSolution(const Vertex &st
         const base::State *st = stateProperty_[pos];
         unsigned int &vd = vertexValidityProperty_[pos];
         if ((vd & VALIDITY_TRUE) == 0)
-            if (si_->isValid(st))
+        {
+            time::point starto = time::now();
+            bool cvalid = si_->isValid(st);
+            oTime_ += time::seconds(time::now() - starto);
+            if (cvalid)
                 vd |= VALIDITY_TRUE;
+        }
         if ((vd & VALIDITY_TRUE) == 0)
             milestonesToRemove.insert(pos);
         if (milestonesToRemove.empty())
@@ -586,7 +593,10 @@ ompl::base::PathPtr ompl::geometric::LazyPRM::constructSolution(const Vertex &st
         unsigned int &evd = edgeValidityProperty_[e];
         if ((evd & VALIDITY_TRUE) == 0)
         {
-            if (si_->checkMotion(*state, *prevState))
+            time::point starto = time::now();
+            bool cvalid = si_->checkMotion(*state, *prevState);
+            oTime_ += time::seconds(time::now() - starto);
+            if (cvalid)
                 evd |= VALIDITY_TRUE;
         }
         if ((evd & VALIDITY_TRUE) == 0)

@@ -57,6 +57,7 @@ ompl::geometric::RRTXstatic::RRTXstatic(const base::SpaceInformationPtr &si)
     specs_.canReportIntermediateSolutions = true;
 
     Planner::declareParam<double>("range", this, &RRTXstatic::setRange, &RRTXstatic::getRange, "0.:1.:10000.");
+    Planner::declareParam<double>("collision_range", this, &RRTXstatic::setMaxCollisionDistance, &RRTXstatic::getMaxCollisionDistance, "0.:1.:10000.");
     Planner::declareParam<double>("goal_bias", this, &RRTXstatic::setGoalBias, &RRTXstatic::getGoalBias, "0.:.05:1.");
     Planner::declareParam<double>("epsilon", this, &RRTXstatic::setEpsilon, &RRTXstatic::getEpsilon, "0.:.01:10.");
     Planner::declareParam<double>("rewire_factor", this, &RRTXstatic::setRewireFactor, &RRTXstatic::getRewireFactor,
@@ -79,6 +80,7 @@ ompl::geometric::RRTXstatic::RRTXstatic(const base::SpaceInformationPtr &si)
     addPlannerProgressProperty("iterations INTEGER", [this] { return numIterationsProperty(); });
     addPlannerProgressProperty("motions INTEGER", [this] { return numMotionsProperty(); });
     addPlannerProgressProperty("best cost REAL", [this] { return bestCostProperty(); });
+    addPlannerProgressProperty("collision check time REAL", [this] { return collisionCheckTimeProperty(); });
 }
 
 ompl::geometric::RRTXstatic::~RRTXstatic()
@@ -91,6 +93,7 @@ void ompl::geometric::RRTXstatic::setup()
     Planner::setup();
     tools::SelfConfig sc(si_, getName());
     sc.configurePlannerRange(maxDistance_);
+    sc.configurePlannerCollisionRange(maxCollisionDistance_);
     if (!si_->getStateSpace()->hasSymmetricDistance() || !si_->getStateSpace()->hasSymmetricInterpolate())
     {
         OMPL_WARN("%s requires a state space with symmetric distance and symmetric interpolation.", getName().c_str());
@@ -147,6 +150,7 @@ void ompl::geometric::RRTXstatic::clear()
     lastGoalMotion_ = nullptr;
     goalMotions_.clear();
 
+    oTime_ = 0;
     iterations_ = 0;
     bestCost_ = base::Cost(std::numeric_limits<double>::quiet_NaN());
 }
@@ -263,14 +267,17 @@ ompl::base::PlannerStatus ompl::geometric::RRTXstatic::solve(const base::Planner
 
         // find state to add to the tree
         double d = si_->distance(nmotion->state, rstate);
-        if (d > maxDistance_)
+        if (d > maxCollisionDistance_)
         {
-            si_->getStateSpace()->interpolate(nmotion->state, rstate, maxDistance_ / d, xstate);
+            si_->getStateSpace()->interpolate(nmotion->state, rstate, maxCollisionDistance_ / d, xstate);
             dstate = xstate;
         }
 
         // Check if the motion between the nearest state and the state to add is valid
-        if (si_->checkMotion(nmotion->state, dstate))
+        time::point starto = time::now();
+        bool cvalid = si_->checkMotion(nmotion->state, dstate);
+        oTime_ += time::seconds(time::now() - starto);
+        if (cvalid)
         {
             // create a motion
             motion = new Motion(si_);
@@ -294,15 +301,25 @@ ompl::base::PlannerStatus ompl::geometric::RRTXstatic::solve(const base::Planner
                 if (opt_->isCostBetterThan(cost, motion->cost))
                 {
                     // Check range and feasibility
-                    if ((!useKNearest_ || distanceFunction(motion, nb) < maxDistance_) &&
-                        si_->checkMotion(nb->state, motion->state))
+                    if (!useKNearest_ || distanceFunction(motion, nb) < maxDistance_)
                     {
-                        // mark than the motino has been checked as valid
-                        it->second = true;
+                        time::point starto = time::now();
+                        bool cvalid = si_->checkMotion(nb->state, motion->state);
+                        oTime_ += time::seconds(time::now() - starto);
+                        if (cvalid)
+                        {
+                            // mark than the motino has been checked as valid
+                            it->second = true;
 
-                        motion->cost = cost;
-                        motion->parent = nb;
-                        ++it;
+                            motion->cost = cost;
+                            motion->parent = nb;
+                            ++it;
+                        }
+                        else 
+                        {
+                            // Remove unfeasible neighbor from the list of neighbors
+                            it = motion->nbh.erase(it);
+                        }
                     }
                     else
                     {
@@ -387,7 +404,9 @@ ompl::base::PlannerStatus ompl::geometric::RRTXstatic::solve(const base::Planner
                             // changing parent, check feasibility
                             if (!feas)
                             {
+                                time::point starto = time::now();
                                 feas = si_->checkMotion(nb->state, min->state);
+                                oTime_ += time::seconds(time::now() - starto);
                                 if (!feas)
                                 {
                                     // Remove unfeasible neighbor from the list of neighbors

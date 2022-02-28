@@ -326,6 +326,13 @@ namespace ompl
             unsigned int iterations_{0};
             /** \brief Best cost found so far by algorithm */
             double bestCost_;
+
+            double oTime_{0};
+
+            std::string collisionCheckTimeProperty() const
+            {
+                return std::to_string(oTime_);
+            }
         };
     }
 }

@@ -94,6 +94,8 @@ namespace ompl
             /** \brief Normalize the value of the state to the interval [-Pi, Pi) */
             void enforceBounds(State *state) const override;
 
+            void enforceBoundsRandom(State *state) const override;
+
             /** \brief Check if the value of the state is in the interval [-Pi, Pi) */
             bool satisfiesBounds(const State *state) const override;
 

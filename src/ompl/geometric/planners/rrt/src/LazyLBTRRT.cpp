@@ -67,6 +67,7 @@ ompl::geometric::LazyLBTRRT::LazyLBTRRT(const base::SpaceInformationPtr &si)
                                {
                                    return getBestCost();
                                });
+    addPlannerProgressProperty("collision check time REAL", [this] { return collisionCheckTimeProperty(); });
 }
 
 ompl::geometric::LazyLBTRRT::~LazyLBTRRT()
@@ -85,6 +86,7 @@ void ompl::geometric::LazyLBTRRT::clear()
     graphApx_.clear();
     lastGoalMotion_ = nullptr;
 
+    oTime_ = 0;
     iterations_ = 0;
     bestCost_ = std::numeric_limits<double>::infinity();
 }
@@ -274,7 +276,10 @@ std::tuple<ompl::geometric::LazyLBTRRT::Motion *, ompl::base::State *, double> o
         d = maxDistance_;
     }
 
-    if (!checkMotion(nmotion->state_, dstate))
+    time::point starto = time::now();
+    bool cvalid = checkMotion(nmotion->state_, dstate);
+    oTime_ += time::seconds(time::now() - starto);
+    if (!cvalid)
         return std::make_tuple((Motion *)nullptr, (base::State *)nullptr, 0.0);
 
     // motion is valid
@@ -408,7 +413,10 @@ void ompl::geometric::LazyLBTRRT::closeBounds(const base::PlannerTerminationCond
 
         Motion *motionU = idToMotionMap_[u];
         Motion *motionV = idToMotionMap_[v];
-        if (checkMotion(motionU, motionV))
+        time::point starto = time::now();
+        bool cvalid = checkMotion(motionU, motionV);
+        oTime_ += time::seconds(time::now() - starto);
+        if (cvalid)
         {
             // note that we change the direction between u and v due to the diff in definition between Apx and LB
             addEdgeApx(motionV, motionU,

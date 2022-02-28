@@ -32,7 +32,7 @@
 *  POSSIBILITY OF SUCH DAMAGE.
 *********************************************************************/
 
-/* Author: Ioan Sucan */
+/* Author: Ioan Sucan, Shi Shenglei */
 
 #ifndef OMPL_BASE_STATE_SAMPLER_
 #define OMPL_BASE_STATE_SAMPLER_
@@ -99,6 +99,16 @@ namespace ompl
             */
             virtual void sampleGaussian(State *state, const State *mean, double stdDev) = 0;
 
+            void setLocalSeed(std::uint_fast32_t localSeed)
+            {
+                rng_.setLocalSeed(localSeed);
+            }
+
+            std::uint_fast32_t getLocalSeed() const
+            {
+                return rng_.getLocalSeed();
+            }
+
         protected:
             /** \brief The state space this sampler samples */
             const StateSpace *space_;
@@ -136,6 +146,16 @@ namespace ompl
             /** \brief Call sampleGaussian for each of the subspace states
                 with stdDev scaled by the corresponding subspace weight. */
             void sampleGaussian(State *state, const State *mean, double stdDev) override;
+
+            void setLocalSeed(std::uint_fast32_t localSeed, const unsigned int index)
+            {
+                samplers_[index]->setLocalSeed(localSeed);
+            }
+
+            std::uint_fast32_t getLocalSeed(const unsigned int index) const
+            {
+                return samplers_[index]->getLocalSeed();
+            }
 
         protected:
             /** \brief The samplers that are composed */

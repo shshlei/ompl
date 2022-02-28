@@ -99,6 +99,12 @@ void ompl::base::TimeStateSpace::enforceBounds(State *state) const
     }
 }
 
+void ompl::base::TimeStateSpace::enforceBoundsRandom(State *state) const
+{
+    if (!satisfiesBounds(state))
+        allocDefaultStateSampler()->sampleUniform(state);
+}
+
 bool ompl::base::TimeStateSpace::satisfiesBounds(const State *state) const
 {
     return !bounded_ || (state->as<StateType>()->position >= minTime_ - std::numeric_limits<double>::epsilon() &&

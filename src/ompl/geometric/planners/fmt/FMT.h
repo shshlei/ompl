@@ -48,6 +48,7 @@
 #include <ompl/datastructures/BinaryHeap.h>
 #include <ompl/base/OptimizationObjective.h>
 #include <map>
+#include <limits>
 
 namespace ompl
 {
@@ -206,6 +207,11 @@ namespace ompl
             bool getExtendedFMT() const
             {
                 return extendedFMT_;
+            }
+
+            ompl::base::Cost bestCost() const
+            {
+                return bestCost_;
             }
 
         protected:
@@ -488,6 +494,8 @@ namespace ompl
             /** \brief Add new samples if the tree was not able to find a solution. */
             bool extendedFMT_{true};
 
+            base::Cost bestCost_{std::numeric_limits<double>::quiet_NaN()};
+            
             // For sorting a list of costs and getting only their sorted indices
             struct CostIndexCompare
             {
@@ -502,6 +510,18 @@ namespace ompl
                 const std::vector<base::Cost> &costs_;
                 const base::OptimizationObjective &opt_;
             };
+
+            double oTime_{0};
+
+            std::string collisionCheckTimeProperty() const
+            {
+                return std::to_string(oTime_);
+            }
+
+            std::string bestCostProperty() const
+            {
+                return std::to_string(bestCost().value());
+            }
         };
     }
 }

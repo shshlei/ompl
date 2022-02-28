@@ -32,7 +32,7 @@
 *  POSSIBILITY OF SUCH DAMAGE.
 *********************************************************************/
 
-/* Authors: Alejandro Perez, Sertac Karaman, Ryan Luna, Luis G. Torres, Ioan Sucan, Javier V Gomez, Jonathan Gammell */
+/* Authors: Alejandro Perez, Sertac Karaman, Ryan Luna, Luis G. Torres, Ioan Sucan, Javier V Gomez, Jonathan Gammell, Shi Shenglei */
 
 #include "ompl/geometric/planners/rrt/RRTstar.h"
 #include <algorithm>
@@ -57,6 +57,7 @@ ompl::geometric::RRTstar::RRTstar(const base::SpaceInformationPtr &si)
     specs_.canReportIntermediateSolutions = true;
 
     Planner::declareParam<double>("range", this, &RRTstar::setRange, &RRTstar::getRange, "0.:1.:10000.");
+    Planner::declareParam<double>("collision_range", this, &RRTstar::setMaxCollisionDistance, &RRTstar::getMaxCollisionDistance, "0.:1.:10000.");
     Planner::declareParam<double>("goal_bias", this, &RRTstar::setGoalBias, &RRTstar::getGoalBias, "0.:.05:1.");
     Planner::declareParam<double>("rewire_factor", this, &RRTstar::setRewireFactor, &RRTstar::getRewireFactor,
                                   "1.0:0.01:2.0");
@@ -84,6 +85,7 @@ ompl::geometric::RRTstar::RRTstar(const base::SpaceInformationPtr &si)
 
     addPlannerProgressProperty("iterations INTEGER", [this] { return numIterationsProperty(); });
     addPlannerProgressProperty("best cost REAL", [this] { return bestCostProperty(); });
+    addPlannerProgressProperty("collision check time REAL", [this] { return collisionCheckTimeProperty(); });
 }
 
 ompl::geometric::RRTstar::~RRTstar()
@@ -96,6 +98,7 @@ void ompl::geometric::RRTstar::setup()
     Planner::setup();
     tools::SelfConfig sc(si_, getName());
     sc.configurePlannerRange(maxDistance_);
+    sc.configurePlannerCollisionRange(maxCollisionDistance_);
     if (!si_->getStateSpace()->hasSymmetricDistance() || !si_->getStateSpace()->hasSymmetricInterpolate())
     {
         OMPL_WARN("%s requires a state space with symmetric distance and symmetric interpolation.", getName().c_str());
@@ -156,6 +159,7 @@ void ompl::geometric::RRTstar::clear()
     goalMotions_.clear();
     startMotions_.clear();
 
+    oTime_ = 0;
     iterations_ = 0;
     bestCost_ = base::Cost(std::numeric_limits<double>::quiet_NaN());
     prunedCost_ = base::Cost(std::numeric_limits<double>::quiet_NaN());
@@ -272,14 +276,17 @@ ompl::base::PlannerStatus ompl::geometric::RRTstar::solve(const base::PlannerTer
 
         // find state to add to the tree
         double d = si_->distance(nmotion->state, rstate);
-        if (d > maxDistance_)
+        if (d > maxCollisionDistance_)
         {
-            si_->getStateSpace()->interpolate(nmotion->state, rstate, maxDistance_ / d, xstate);
+            si_->getStateSpace()->interpolate(nmotion->state, rstate, maxCollisionDistance_ / d, xstate);
             dstate = xstate;
         }
 
         // Check if the motion between the nearest state and the state to add is valid
-        if (si_->checkMotion(nmotion->state, dstate))
+        time::point starto = time::now();
+        bool cvalid = si_->checkMotion(nmotion->state, dstate);
+        oTime_ += time::seconds(time::now() - starto);
+        if (cvalid)
         {
             // create a motion
             auto *motion = new Motion(si_);
@@ -342,9 +349,7 @@ ompl::base::PlannerStatus ompl::geometric::RRTstar::solve(const base::PlannerTer
                 for (std::vector<std::size_t>::const_iterator i = sortedCostIndices.begin();
                      i != sortedCostIndices.begin() + nbh.size(); ++i)
                 {
-                    if (nbh[*i] == nmotion ||
-                        ((!useKNearest_ || si_->distance(nbh[*i]->state, motion->state) < maxDistance_) &&
-                         si_->checkMotion(nbh[*i]->state, motion->state)))
+                    if (nbh[*i] == nmotion)
                     {
                         motion->incCost = incCosts[*i];
                         motion->cost = costs[*i];
@@ -352,14 +357,30 @@ ompl::base::PlannerStatus ompl::geometric::RRTstar::solve(const base::PlannerTer
                         valid[*i] = 1;
                         break;
                     }
+                    else if (!useKNearest_ || si_->distance(nbh[*i]->state, motion->state) < maxDistance_) 
+                    {
+                        time::point starto = time::now();
+                        bool cvalid = si_->checkMotion(nbh[*i]->state, motion->state);
+                        oTime_ += time::seconds(time::now() - starto);
+                        if (cvalid)
+                        {
+                            motion->incCost = incCosts[*i];
+                            motion->cost = costs[*i];
+                            motion->parent = nbh[*i];
+                            valid[*i] = 1;
+                            break;
+                        }
+                        else 
+                            valid[*i] = -1;
+                    }
                     else
                         valid[*i] = -1;
                 }
             }
             else  // if not delayCC
             {
-                motion->incCost = opt_->motionCost(nmotion->state, motion->state);
-                motion->cost = opt_->combineCosts(nmotion->cost, motion->incCost);
+                base::Cost incCost = motion->incCost;
+                base::Cost cost = motion->cost;
                 // find which one we connect the new state to
                 for (std::size_t i = 0; i < nbh.size(); ++i)
                 {
@@ -369,13 +390,20 @@ ompl::base::PlannerStatus ompl::geometric::RRTstar::solve(const base::PlannerTer
                         costs[i] = opt_->combineCosts(nbh[i]->cost, incCosts[i]);
                         if (opt_->isCostBetterThan(costs[i], motion->cost))
                         {
-                            if ((!useKNearest_ || si_->distance(nbh[i]->state, motion->state) < maxDistance_) &&
-                                si_->checkMotion(nbh[i]->state, motion->state))
+                            if (!useKNearest_ || si_->distance(nbh[i]->state, motion->state) < maxDistance_)
                             {
-                                motion->incCost = incCosts[i];
-                                motion->cost = costs[i];
-                                motion->parent = nbh[i];
-                                valid[i] = 1;
+                                time::point starto = time::now();
+                                bool cvalid = si_->checkMotion(nbh[i]->state, motion->state);
+                                oTime_ += time::seconds(time::now() - starto);
+                                if (cvalid)
+                                {
+                                    motion->incCost = incCosts[i];
+                                    motion->cost = costs[i];
+                                    motion->parent = nbh[i];
+                                    valid[i] = 1;
+                                }
+                                else 
+                                    valid[i] = -1;
                             }
                             else
                                 valid[i] = -1;
@@ -383,33 +411,25 @@ ompl::base::PlannerStatus ompl::geometric::RRTstar::solve(const base::PlannerTer
                     }
                     else
                     {
-                        incCosts[i] = motion->incCost;
-                        costs[i] = motion->cost;
+                        incCosts[i] = incCost;
+                        costs[i] = cost;
                         valid[i] = 1;
                     }
                 }
             }
 
-            if (useNewStateRejection_)
+            if (!useAdmissibleCostToCome_)
             {
-                if (opt_->isCostBetterThan(solutionHeuristic(motion), bestCost_))
-                {
-                    nn_->add(motion);
-                    motion->parent->children.push_back(motion);
-                }
-                else  // If the new motion does not improve the best cost it is ignored.
+                if (useNewStateRejection_ && !opt_->isCostBetterThan(solutionHeuristic(motion), bestCost_))
                 {
                     si_->freeState(motion->state);
                     delete motion;
                     continue;
                 }
             }
-            else
-            {
-                // add motion to the tree
-                nn_->add(motion);
-                motion->parent->children.push_back(motion);
-            }
+
+            nn_->add(motion);
+            motion->parent->children.push_back(motion);
 
             bool checkForSolution = false;
             for (std::size_t i = 0; i < nbh.size(); ++i)
@@ -427,9 +447,13 @@ ompl::base::PlannerStatus ompl::geometric::RRTstar::solve(const base::PlannerTer
                         bool motionValid;
                         if (valid[i] == 0)
                         {
-                            motionValid =
-                                (!useKNearest_ || si_->distance(nbh[i]->state, motion->state) < maxDistance_) &&
-                                si_->checkMotion(motion->state, nbh[i]->state);
+                            motionValid = (!useKNearest_ || si_->distance(nbh[i]->state, motion->state) < maxDistance_); 
+                            if (motionValid)
+                            {
+                                time::point starto = time::now();
+                                motionValid = si_->checkMotion(motion->state, nbh[i]->state);
+                                oTime_ += time::seconds(time::now() - starto);
+                            }
                         }
                         else
                         {
@@ -493,6 +517,10 @@ ompl::base::PlannerStatus ompl::geometric::RRTstar::solve(const base::PlannerTer
                             bestGoalMotion_ = goalMotion;
                             bestCost_ = bestGoalMotion_->cost;
                             updatedSolution = true;
+
+                            OMPL_INFORM("%s: Found a better solution with a cost of %.2f in %u iterations (%u "
+                                        "vertices in the graph)",
+                                        getName().c_str(), bestCost_.value(), iterations_, nn_->size());
 
                             // Check if it satisfies the optimization objective, if it does, break the for loop
                             if (opt_->isSatisfied(bestCost_))
@@ -911,7 +939,7 @@ ompl::base::Cost ompl::geometric::RRTstar::solutionHeuristic(const Motion *motio
     }
     else
     {
-        costToCome = motion->cost;  // current cost from the state to the goal
+        costToCome = motion->cost;
     }
 
     const base::Cost costToGo =

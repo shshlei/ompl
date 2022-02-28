@@ -210,6 +210,12 @@ void ompl::base::SO3StateSpace::enforceBounds(State *state) const
     }
 }
 
+void ompl::base::SO3StateSpace::enforceBoundsRandom(State *state) const
+{
+    if (!satisfiesBounds(state))
+        allocDefaultStateSampler()->sampleUniform(state);
+}
+
 bool ompl::base::SO3StateSpace::satisfiesBounds(const State *state) const
 {
     return fabs(norm(static_cast<const StateType *>(state)) - 1.0) < MAX_QUATERNION_NORM_ERROR;

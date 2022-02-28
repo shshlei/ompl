@@ -39,6 +39,7 @@
 
 #include "ompl/base/State.h"
 #include "ompl/util/ClassForward.h"
+#include "ompl/util/Time.h"
 #include "ompl/base/GenericParam.h"
 #include <string>
 
@@ -116,12 +117,19 @@ namespace ompl
                 return params_;
             }
 
+            double getCollisionCheckTime() const 
+            {
+                return oTime_;
+            }
+
         protected:
             /** \brief The state space this sampler samples */
             const SpaceInformation *si_;
 
             /** \brief Number of attempts to find a valid sample */
             unsigned int attempts_;
+
+            double oTime_{0};
 
             /** \brief The name of the sampler */
             std::string name_;

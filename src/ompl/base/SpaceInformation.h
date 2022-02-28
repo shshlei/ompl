@@ -32,12 +32,13 @@
 *  POSSIBILITY OF SUCH DAMAGE.
 *********************************************************************/
 
-/* Author: Ioan Sucan */
+/* Author: Ioan Sucan, Shi Shenglei */
 
 #ifndef OMPL_BASE_SPACE_INFORMATION_
 #define OMPL_BASE_SPACE_INFORMATION_
 
 #include "ompl/base/State.h"
+#include "ompl/base/Contact.h"
 #include "ompl/base/StateValidityChecker.h"
 #include "ompl/base/MotionValidator.h"
 #include "ompl/base/StateSpace.h"
@@ -96,6 +97,12 @@ namespace ompl
                 return stateValidityChecker_->isValid(state);
             }
 
+            /** \brief Check if a given state is valid or not */
+            bool isValid(const State *state, ContactResultVector &contactVector, double &dist) const
+            {
+                return stateValidityChecker_->isValid(state, contactVector, dist);
+            }
+
             /** \brief Return the instance of the used state space */
             const StateSpacePtr &getStateSpace() const
             {
@@ -127,6 +134,12 @@ namespace ompl
             void enforceBounds(State *state) const
             {
                 stateSpace_->enforceBounds(state);
+            }
+
+            /** \brief Bring the state within the bounds of the state space */
+            void enforceBoundsRandom(State *state) const
+            {
+                stateSpace_->enforceBoundsRandom(state);
             }
 
             /** \brief Print a state to a stream */

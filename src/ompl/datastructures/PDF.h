@@ -32,7 +32,7 @@
 *  POSSIBILITY OF SUCH DAMAGE.
 *********************************************************************/
 
-/* Author: Matt Maly */
+/* Author: Matt Maly, Shi Shenglei */
 
 #ifndef OMPL_DATASTRUCTURES_PDF_
 #define OMPL_DATASTRUCTURES_PDF_
@@ -171,6 +171,16 @@ which must be between 0 and 1. */
         double getWeight(const Element *elem) const
         {
             return tree_.front()[elem->index_];
+        }
+
+        void getWeights(std::vector<double> &weights) 
+        {
+            std::vector<Element *> elems = getElements();
+
+            weights.resize(elems.size());
+
+            for (unsigned int i = 0; i < elems.size(); i++)
+                weights[i] = getWeight(elems[i]);
         }
 
         /** \brief Removes the data in the given Element from the PDF. After calling this function, the Element object

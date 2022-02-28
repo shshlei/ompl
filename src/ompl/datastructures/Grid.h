@@ -377,6 +377,12 @@ namespace ompl
             return hash_.end();
         }
 
+        iterator erase(iterator it)
+        {
+            it = hash_.erase(it);
+            return it;
+        }
+
     protected:
         /// The dimension of the grid
         unsigned int dimension_;

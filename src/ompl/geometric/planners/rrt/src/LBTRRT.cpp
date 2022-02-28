@@ -60,6 +60,7 @@ ompl::geometric::LBTRRT::LBTRRT(const base::SpaceInformationPtr &si)
                                {
                                    return getBestCost();
                                });
+    addPlannerProgressProperty("collision check time REAL", [this] { return collisionCheckTimeProperty(); });
 }
 
 ompl::geometric::LBTRRT::~LBTRRT()
@@ -77,6 +78,7 @@ void ompl::geometric::LBTRRT::clear()
     lowerBoundGraph_.clear();
     lastGoalMotion_ = nullptr;
 
+    oTime_ = 0;
     iterations_ = 0;
     bestCost_ = std::numeric_limits<double>::infinity();
 }
@@ -186,7 +188,10 @@ ompl::base::PlannerStatus ompl::geometric::LBTRRT::solve(const base::PlannerTerm
             dstate = xstate;
         }
 
-        if (checkMotion(nmotion->state_, dstate))
+        time::point starto = time::now();
+        bool cvalid = checkMotion(nmotion->state_, dstate);
+        oTime_ += time::seconds(time::now() - starto);
+        if (cvalid)
         {
             statesGenerated++;
             /* create a motion */
@@ -312,8 +317,13 @@ void ompl::geometric::LBTRRT::considerEdge(Motion *parent, Motion *child, double
     // this prevents the update of the graph due to the edge insertion and then the re-update as it is removed
     double potential_cost = parent->costLb_ + c;
     if (child->costApx_ > (1 + epsilon_) * potential_cost)
-        if (!checkMotion(parent, child))
+    {
+        time::point starto = time::now();
+        bool cvalid = checkMotion(parent, child);
+        oTime_ += time::seconds(time::now() - starto);
+        if (!cvalid)
             return;
+    }
 
     // update lowerBoundGraph_
     std::list<std::size_t> affected;
@@ -342,7 +352,10 @@ void ompl::geometric::LBTRRT::considerEdge(Motion *parent, Motion *child, double
         if (motion->costApx_ > (1 + epsilon_) * motion->costLb_)
         {
             Motion *potential_parent = getMotion(lowerBoundGraph_.getShortestPathParent(motion->id_));
-            if (checkMotion(potential_parent, motion))
+            time::point starto = time::now();
+            bool cvalid = checkMotion(potential_parent, motion);
+            oTime_ += time::seconds(time::now() - starto);
+            if (cvalid)
             {
                 double delta = lazilyUpdateApxParent(motion, potential_parent);
                 updateChildCostsApx(motion, delta);
@@ -379,8 +392,7 @@ void ompl::geometric::LBTRRT::considerEdge(Motion *parent, Motion *child, double
             }
         }
     }
-
-    }
+}
 
 void ompl::geometric::LBTRRT::getPlannerData(base::PlannerData &data) const
 {

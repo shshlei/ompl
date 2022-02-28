@@ -45,13 +45,16 @@ ompl::base::ObstacleBasedValidStateSampler::ObstacleBasedValidStateSampler(const
 
 bool ompl::base::ObstacleBasedValidStateSampler::sample(State *state)
 {
+    oTime_ = 0;
     // find invalid state
     unsigned int attempts = 0;
     bool valid = true;
     do
     {
         sampler_->sampleUniform(state);
+        time::point starto = time::now();
         valid = si_->isValid(state);
+        oTime_ += time::seconds(time::now() - starto);
         ++attempts;
     } while (valid && attempts < attempts_);
     if (valid)
@@ -63,7 +66,9 @@ bool ompl::base::ObstacleBasedValidStateSampler::sample(State *state)
     do
     {
         sampler_->sampleUniform(temp);
+        time::point starto = time::now();
         valid = si_->isValid(temp);
+        oTime_ += time::seconds(time::now() - starto);
         ++attempts;
     } while (!valid && attempts < attempts_);
 
@@ -81,13 +86,16 @@ bool ompl::base::ObstacleBasedValidStateSampler::sample(State *state)
 
 bool ompl::base::ObstacleBasedValidStateSampler::sampleNear(State *state, const State *near, const double distance)
 {
+    oTime_ = 0;
     // find invalid state nearby
     unsigned int attempts = 0;
     bool valid = true;
     do
     {
         sampler_->sampleUniformNear(state, near, distance);
+        time::point starto = time::now();
         valid = si_->isValid(state);
+        oTime_ += time::seconds(time::now() - starto);
         ++attempts;
     } while (valid && attempts < attempts_);
     if (valid)
@@ -99,7 +107,9 @@ bool ompl::base::ObstacleBasedValidStateSampler::sampleNear(State *state, const 
     do
     {
         sampler_->sampleUniform(temp);
+        time::point starto = time::now();
         valid = si_->isValid(temp);
+        oTime_ += time::seconds(time::now() - starto);
         ++attempts;
     } while (!valid && attempts < attempts_);
 

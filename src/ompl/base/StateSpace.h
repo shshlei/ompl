@@ -297,6 +297,10 @@ namespace ompl
                 function can be a no-op. */
             virtual void enforceBounds(State *state) const = 0;
 
+             /** \brief Bring the state within the bounds of the state space with randomness. For unbounded spaces this
+                function can be a no-op. */
+            virtual void enforceBoundsRandom(State *state) const = 0;           
+
             /** \brief Check if a state is inside the bounding box. For unbounded spaces this function
                 can always return true. */
             virtual bool satisfiesBounds(const State *state) const = 0;
@@ -680,6 +684,8 @@ namespace ompl
             double getMeasure() const override;
 
             void enforceBounds(State *state) const override;
+
+            void enforceBoundsRandom(State *state) const override;
 
             bool satisfiesBounds(const State *state) const override;
 

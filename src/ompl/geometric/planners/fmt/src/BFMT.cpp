@@ -38,6 +38,8 @@ namespace ompl
             ompl::base::Planner::declareParam<bool>("cache_cc", this, &BFMT::setCacheCC, &BFMT::getCacheCC, "0,1");
             ompl::base::Planner::declareParam<bool>("extended_fmt", this, &BFMT::setExtendedFMT, &BFMT::getExtendedFMT,
                                                     "0,1");
+            addPlannerProgressProperty("best cost REAL", [this] { return bestCostProperty(); });
+            addPlannerProgressProperty("collision check time REAL", [this] { return collisionCheckTimeProperty(); });
         }
 
         ompl::geometric::BFMT::~BFMT()
@@ -81,6 +83,8 @@ namespace ompl
                               getName().c_str());
                     nearestK_ = false;
                 }
+
+                bestCost_ = opt_->infiniteCost();
             }
             else
             {
@@ -116,6 +120,8 @@ namespace ompl
             Open_elements[REV].clear();
             neighborhoods_.clear();
             collisionChecks_ = 0;
+            bestCost_ = base::Cost(std::numeric_limits<double>::quiet_NaN());
+            oTime_ = 0;
         }
 
         void BFMT::getPlannerData(base::PlannerData &data) const
@@ -224,7 +230,10 @@ namespace ompl
             {
                 sampler_->sampleUniform(motion->getState());
                 sampleAttempts++;
-                if (si_->isValid(motion->getState()))
+                time::point starto = time::now();
+                bool cvalid = si_->isValid(motion->getState());
+                oTime_ += time::seconds(time::now() - starto);
+                if (cvalid)
                 {  // collision checking
                     ++nodeCount;
                     nn->add(motion);
@@ -290,7 +299,10 @@ namespace ompl
 
                 initMotion->currentSet_[REV] = BiDirMotion::SET_UNVISITED;
                 nn_->add(initMotion);  // S <-- {x_init}
-                if (si_->isValid(initMotion->getState()))
+                time::point starto = time::now();
+                bool cvalid = si_->isValid(initMotion->getState());
+                oTime_ += time::seconds(time::now() - starto);
+                if (cvalid)
                 {
                     // Take the first valid initial state as the forward tree root
                     Open_elements[FWD][initMotion] = Open_[FWD].insert(initMotion);
@@ -336,7 +348,10 @@ namespace ompl
 
                 goalMotion->currentSet_[FWD] = BiDirMotion::SET_UNVISITED;
                 nn_->add(goalMotion);  // S <-- {x_goal}
-                if (si_->isValid(goalMotion->getState()))
+                time::point starto = time::now();
+                bool cvalid = si_->isValid(goalMotion->getState());
+                oTime_ += time::seconds(time::now() - starto);
+                if (cvalid)
                 {
                     // Take the first valid goal state as the reverse tree root
                     Open_elements[REV][goalMotion] = Open_[REV].insert(goalMotion);
@@ -436,6 +451,8 @@ namespace ompl
                 static const double cost_difference_from_goal = 0.0;
                 pdef_->addSolutionPath(path, approximate, cost_difference_from_goal, getName());
 
+                bestCost_ = opt_->combineCosts(fwd_cost, rev_cost);
+
                 OMPL_DEBUG("Total path cost: %f\n", fwd_cost.value() + rev_cost.value());
                 return base::PlannerStatus(true, false);
             }
@@ -500,7 +517,9 @@ namespace ompl
                     {
                         if (!xMin->alreadyCC(x))
                         {
+                            time::point starto = time::now();
                             collision_free = si_->checkMotion(xMin->getState(), x->getState());
+                            oTime_ += time::seconds(time::now() - starto);
                             ++collisionChecks_;
                             // Due to FMT3* design, it is only necessary to save unsuccesful
                             // connection attemps because of collision
@@ -511,7 +530,9 @@ namespace ompl
                     else
                     {
                         ++collisionChecks_;
+                        time::point starto = time::now();
                         collision_free = si_->checkMotion(xMin->getState(), x->getState());
+                        oTime_ += time::seconds(time::now() - starto);
                     }
 
                     if (collision_free)
@@ -669,7 +690,10 @@ namespace ompl
             {
                 // Get new sample and check whether it is valid.
                 sampler_->sampleUniform(m->getState());
-                if (!si_->isValid(m->getState()))
+                time::point starto = time::now();
+                bool cvalid = si_->isValid(m->getState());
+                oTime_ += time::seconds(time::now() - starto);
+                if (!cvalid)
                     continue;
 
                 // Get neighbours of the new sample.
@@ -740,7 +764,9 @@ namespace ompl
                      i != sortedCostIndices.begin() + yNear.size(); ++i)
                 {
                     ++collisionChecks_;
-                    if (si_->checkMotion(yNear[*i]->getState(), m->getState()))
+                    bool cvalid = si_->checkMotion(yNear[*i]->getState(), m->getState());
+                    oTime_ += time::seconds(time::now() - starto);
+                    if (cvalid)
                     {
                         const base::Cost incCost = opt_->motionCost(yNear[*i]->getState(), m->getState());
                         m->setParent(yNear[*i]);

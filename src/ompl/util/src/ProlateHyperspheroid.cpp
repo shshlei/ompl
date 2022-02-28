@@ -129,6 +129,16 @@ void ompl::ProlateHyperspheroid::setTransverseDiameter(double transverseDiameter
     // No else, the diameter didn't change
 }
 
+double ompl::ProlateHyperspheroid::getTransverseDiameter() const
+{
+    return dataPtr_->transverseDiameter_;
+}
+
+bool ompl::ProlateHyperspheroid::isTransformUpToDate() const
+{
+    return dataPtr_->isTransformUpToDate_;
+}
+
 void ompl::ProlateHyperspheroid::transform(const double sphere[], double phs[]) const
 {
     if (!dataPtr_->isTransformUpToDate_)

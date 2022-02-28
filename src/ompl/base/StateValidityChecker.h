@@ -32,12 +32,13 @@
 *  POSSIBILITY OF SUCH DAMAGE.
 *********************************************************************/
 
-/* Author: Ioan Sucan */
+/* Author: Ioan Sucan, Shi Shenglei */
 
 #ifndef OMPL_BASE_STATE_VALIDITY_CHECKER_
 #define OMPL_BASE_STATE_VALIDITY_CHECKER_
 
 #include "ompl/base/State.h"
+#include "ompl/base/Contact.h"
 #include "ompl/util/ClassForward.h"
 
 namespace ompl
@@ -131,11 +132,22 @@ namespace ompl
                 return isValid(state);
             }
 
+            /** \brief Return true if the state \e state is valid. In addition, set \e contact information. */
+            virtual bool isValid(const State *state, ContactResultVector &contactVector, double &/*dist*/) const
+            {
+                clearance(state, contactVector);
+                return isValid(state);
+            }
+
             /** \brief Report the distance to the nearest invalid state when starting from \e state. If the distance is
                 negative, the value of clearance is the penetration depth.*/
             virtual double clearance(const State * /*state*/) const
             {
                 return 0.0;
+            }
+
+            virtual void clearance(const State * /*state*/, ContactResultVector &/*contactVector*/) const 
+            {
             }
 
             /** \brief Report the distance to the nearest invalid state when starting from \e state, and if possible,

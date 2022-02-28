@@ -123,6 +123,7 @@ namespace ompl
                                        [this] { return edgeCollisionCheckProgressProperty(); });
             addPlannerProgressProperty("nearest neighbour calls INTEGER",
                                        [this] { return nearestNeighbourProgressProperty(); });
+            addPlannerProgressProperty("collision check time REAL", [this] { return collisionCheckTimeProperty(); });
 
             // Extra progress info that aren't necessary for every day use. Uncomment if desired.
             /*
@@ -295,6 +296,7 @@ namespace ompl
 
             // Call my base clear:
             Planner::clear();
+            oTime_ = 0;
         }
 
         ompl::base::PlannerStatus BITstar::solve(const ompl::base::PlannerTerminationCondition &ptc)
@@ -801,7 +803,10 @@ namespace ompl
             else  // This is a new edge, we need to check whether it is feasible.
             {
                 ++numEdgeCollisionChecks_;
-                return Planner::si_->checkMotion(edge.first->state(), edge.second->state());
+                time::point starto = time::now();
+                bool cvalid = Planner::si_->checkMotion(edge.first->state(), edge.second->state());
+                oTime_ += time::seconds(time::now() - starto);
+                return cvalid;
             }
         }
 

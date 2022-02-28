@@ -91,6 +91,7 @@ ompl::geometric::PRM::PRM(const base::SpaceInformationPtr &si, bool starStrategy
     addPlannerProgressProperty("best cost REAL", [this] { return getBestCost(); });
     addPlannerProgressProperty("milestone count INTEGER", [this] { return getMilestoneCountString(); });
     addPlannerProgressProperty("edge count INTEGER", [this] { return getEdgeCountString(); });
+    addPlannerProgressProperty("collision check time REAL", [this] { return collisionCheckTimeProperty(); });
 }
 
 ompl::geometric::PRM::PRM(const base::PlannerData &data, bool starStrategy)
@@ -244,6 +245,7 @@ void ompl::geometric::PRM::clear()
         nn_->clear();
     clearQuery();
 
+    oTime_ = 0;
     iterations_ = 0;
     bestCost_ = base::Cost(std::numeric_limits<double>::quiet_NaN());
 }
@@ -367,6 +369,7 @@ void ompl::geometric::PRM::growRoadmap(const base::PlannerTerminationCondition &
             do
             {
                 found = sampler_->sample(workState);
+                oTime_ += sampler_->getCollisionCheckTime();
                 attempts++;
             } while (attempts < magic::FIND_VALID_STATE_ATTEMPTS_WITHOUT_TERMINATION_CHECK && !found);
         }
@@ -579,7 +582,10 @@ ompl::geometric::PRM::Vertex ompl::geometric::PRM::addMilestone(base::State *sta
         {
             totalConnectionAttemptsProperty_[m]++;
             totalConnectionAttemptsProperty_[n]++;
-            if (si_->checkMotion(stateProperty_[n], stateProperty_[m]))
+            time::point starto = time::now();
+            bool cvalid = si_->checkMotion(stateProperty_[n], stateProperty_[m]);
+            oTime_ += time::seconds(time::now() - starto);
+            if (cvalid)
             {
                 successfulConnectionAttemptsProperty_[m]++;
                 successfulConnectionAttemptsProperty_[n]++;

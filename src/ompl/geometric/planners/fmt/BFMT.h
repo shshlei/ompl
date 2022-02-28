@@ -450,6 +450,11 @@ namespace ompl
 
             using BiDirMotionPtrs = std::vector<BiDirMotion *>;
 
+            ompl::base::Cost bestCost() const
+            {
+                return bestCost_;
+            }
+
         protected:
             /** \brief Comparator used to order motions in a binary heap */
             struct BiDirMotionCompare
@@ -560,7 +565,7 @@ namespace ompl
                 convergence, the user should choose a multiplier for the search
                 radius that is greater than one. The default value is 1.1.
                 In general, a radius between 0.9 and 5 appears to perform the best */
-            double radiusMultiplier_{1.};
+            double radiusMultiplier_{1.1};
 
             /** \brief The volume of numSathe free configuration space, computed
                 as an upper bound with 95% confidence */
@@ -624,6 +629,8 @@ namespace ompl
             /** \brief Add new samples if the tree was not able to find a solution. */
             bool extendedFMT_{true};
 
+            base::Cost bestCost_{std::numeric_limits<double>::quiet_NaN()};
+
             // For sorting a list of costs and getting only their sorted indices
             struct CostIndexCompare
             {
@@ -638,6 +645,18 @@ namespace ompl
                 const std::vector<base::Cost> &costs_;
                 const base::OptimizationObjective &opt_;
             };
+
+            double oTime_{0};
+
+            std::string collisionCheckTimeProperty() const
+            {
+                return std::to_string(oTime_);
+            }
+
+            std::string bestCostProperty() const
+            {
+                return std::to_string(bestCost().value());
+            }
         };
 
     }  // End "geometric" namespace

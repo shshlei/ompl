@@ -68,6 +68,8 @@ ompl::geometric::FMT::FMT(const base::SpaceInformationPtr &si)
     ompl::base::Planner::declareParam<bool>("cache_cc", this, &FMT::setCacheCC, &FMT::getCacheCC, "0,1");
     ompl::base::Planner::declareParam<bool>("heuristics", this, &FMT::setHeuristics, &FMT::getHeuristics, "0,1");
     ompl::base::Planner::declareParam<bool>("extended_fmt", this, &FMT::setExtendedFMT, &FMT::getExtendedFMT, "0,1");
+    addPlannerProgressProperty("best cost REAL", [this] { return bestCostProperty(); });
+    addPlannerProgressProperty("collision check time REAL", [this] { return collisionCheckTimeProperty(); });
 }
 
 ompl::geometric::FMT::~FMT()
@@ -109,6 +111,8 @@ void ompl::geometric::FMT::setup()
                       getName().c_str());
             nearestK_ = false;
         }
+
+        bestCost_ = opt_->infiniteCost();
     }
     else
     {
@@ -143,7 +147,9 @@ void ompl::geometric::FMT::clear()
     Open_.clear();
     neighborhoods_.clear();
 
+    bestCost_ = base::Cost(std::numeric_limits<double>::quiet_NaN());
     collisionChecks_ = 0;
+    oTime_ = 0;
 }
 
 void ompl::geometric::FMT::getPlannerData(base::PlannerData &data) const
@@ -221,7 +227,9 @@ void ompl::geometric::FMT::sampleFree(const base::PlannerTerminationCondition &p
         sampler_->sampleUniform(motion->getState());
         sampleAttempts++;
 
+        time::point starto = time::now();
         bool collision_free = si_->isValid(motion->getState());
+        oTime_ += time::seconds(time::now() - starto);
 
         if (collision_free)
         {
@@ -253,7 +261,10 @@ void ompl::geometric::FMT::assureGoalIsSampled(const ompl::base::GoalSampleableR
         if (nearGoal.empty())
         {
             OMPL_DEBUG("No state inside goal region");
-            if (si_->getStateValidityChecker()->isValid(gMotion->getState()))
+            time::point starto = time::now();
+            bool cvalid = si_->getStateValidityChecker()->isValid(gMotion->getState());
+            oTime_ += time::seconds(time::now() - starto);
+            if (cvalid)
             {
                 nn_->add(gMotion);
                 goalState_ = gMotion->getState();
@@ -346,7 +357,10 @@ ompl::base::PlannerStatus ompl::geometric::FMT::solve(const base::PlannerTermina
     while (!ptc)
     {
         if ((plannerSuccess = goal->isSatisfied(z->getState())))
+        {
+            bestCost_ = z->getCost();
             break;
+        }
 
         successfulExpansion = expandTreeFromNode(&z);
 
@@ -368,7 +382,10 @@ ompl::base::PlannerStatus ompl::geometric::FMT::solve(const base::PlannerTermina
             {
                 sampler_->sampleUniform(m->getState());
 
-                if (!si_->isValid(m->getState()))
+                time::point starto = time::now();
+                bool cvalid = si_->isValid(m->getState());
+                oTime_ += time::seconds(time::now() - starto);
+                if (!cvalid)
                     continue;
 
                 if (nearestK_)
@@ -438,7 +455,10 @@ ompl::base::PlannerStatus ompl::geometric::FMT::solve(const base::PlannerTermina
                 for (std::vector<std::size_t>::const_iterator i = sortedCostIndices.begin();
                      i != sortedCostIndices.begin() + yNear.size(); ++i)
                 {
-                    if (si_->checkMotion(yNear[*i]->getState(), m->getState()))
+                    time::point starto = time::now();
+                    bool cvalid = si_->checkMotion(yNear[*i]->getState(), m->getState());
+                    oTime_ += time::seconds(time::now() - starto);
+                    if (cvalid)
                     {
                         m->setParent(yNear[*i]);
                         yNear[*i]->getChildren().push_back(m);
@@ -558,7 +578,9 @@ bool ompl::geometric::FMT::expandTreeFromNode(Motion **z)
             {
                 if (!yMin->alreadyCC(x))
                 {
+                    time::point starto = time::now();
                     collision_free = si_->checkMotion(yMin->getState(), x->getState());
+                    oTime_ += time::seconds(time::now() - starto);
                     ++collisionChecks_;
                     // Due to FMT* design, it is only necessary to save unsuccesful
                     // connection attemps because of collision
@@ -569,7 +591,9 @@ bool ompl::geometric::FMT::expandTreeFromNode(Motion **z)
             else
             {
                 ++collisionChecks_;
+                time::point starto = time::now();
                 collision_free = si_->checkMotion(yMin->getState(), x->getState());
+                oTime_ += time::seconds(time::now() - starto);
             }
 
             if (collision_free)

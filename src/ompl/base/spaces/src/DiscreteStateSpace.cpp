@@ -88,6 +88,12 @@ void ompl::base::DiscreteStateSpace::enforceBounds(State *state) const
         state->as<StateType>()->value = upperBound_;
 }
 
+void ompl::base::DiscreteStateSpace::enforceBoundsRandom(State *state) const
+{
+    if (!satisfiesBounds(state))
+        allocDefaultStateSampler()->sampleUniform(state);
+}
+
 bool ompl::base::DiscreteStateSpace::satisfiesBounds(const State *state) const
 {
     return state->as<StateType>()->value >= lowerBound_ && state->as<StateType>()->value <= upperBound_;

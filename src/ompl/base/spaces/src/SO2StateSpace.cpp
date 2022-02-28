@@ -87,6 +87,12 @@ void ompl::base::SO2StateSpace::enforceBounds(State *state) const
     state->as<StateType>()->value = v;
 }
 
+void ompl::base::SO2StateSpace::enforceBoundsRandom(State *state) const
+{
+    if (!satisfiesBounds(state))
+        allocDefaultStateSampler()->sampleUniform(state);
+}
+
 bool ompl::base::SO2StateSpace::satisfiesBounds(const State *state) const
 {
     return (state->as<StateType>()->value < pi) &&

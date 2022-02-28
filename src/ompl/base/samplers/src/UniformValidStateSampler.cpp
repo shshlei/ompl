@@ -45,12 +45,15 @@ ompl::base::UniformValidStateSampler::UniformValidStateSampler(const SpaceInform
 
 bool ompl::base::UniformValidStateSampler::sample(State *state)
 {
+    oTime_ = 0;
     unsigned int attempts = 0;
     bool valid = false;
     do
     {
         sampler_->sampleUniform(state);
+        time::point starto = time::now();
         valid = si_->isValid(state);
+        oTime_ += time::seconds(time::now() - starto);
         ++attempts;
     } while (!valid && attempts < attempts_);
     return valid;
@@ -58,12 +61,15 @@ bool ompl::base::UniformValidStateSampler::sample(State *state)
 
 bool ompl::base::UniformValidStateSampler::sampleNear(State *state, const State *near, const double distance)
 {
+    oTime_ = 0;
     unsigned int attempts = 0;
     bool valid = false;
     do
     {
         sampler_->sampleUniformNear(state, near, distance);
+        time::point starto = time::now();
         valid = si_->isValid(state);
+        oTime_ += time::seconds(time::now() - starto);
         ++attempts;
     } while (!valid && attempts < attempts_);
     return valid;
