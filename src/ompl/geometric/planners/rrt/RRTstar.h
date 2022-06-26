@@ -122,6 +122,8 @@ namespace ompl
                 return maxDistance_;
             }
 
+            /** \brief From practical applications, we found that it's more efficient to set a smaller range to 
+                 find a feasible path first, then using a larger rewire range to optimize that pat */
             void setMaxCollisionDistance(double distance)
             {
                 maxCollisionDistance_ = distance;

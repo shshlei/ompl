@@ -32,28 +32,28 @@
 *  POSSIBILITY OF SUCH DAMAGE.
 *********************************************************************/
 
-/* Authors: Ioan Sucan, Shi Shenglei */
+/* Author: Shi Shenglei */
 
-#ifndef OMPL_DATASTRUCTURES_GRID_N_
-#define OMPL_DATASTRUCTURES_GRID_N_
+#ifndef OMPL_DATASTRUCTURES_GRIDNEAREST_N_
+#define OMPL_DATASTRUCTURES_GRIDNEAREST_N_
 
-#include "ompl/datastructures/Grid.h"
+#include "ompl/datastructures/GridNearest.h"
 
 namespace ompl
 {
     /** \brief Representation of a grid where cells keep track of how many neighbors they have */
-    template <typename _T>
-    class GridN : public Grid<_T>
+    template <typename _T, typename _TT = void>
+    class GridNearestN : public GridNearest<_T, _TT>
     {
     public:
         /// Datatype for cell in base class
-        using BaseCell = typename Grid<_T>::Cell;
+        using BaseCell = typename GridNearest<_T, _TT>::Cell;
 
         /// Datatype for array of cells in base class
-        using BaseCellArray = typename Grid<_T>::CellArray;
+        using BaseCellArray = typename GridNearest<_T, _TT>::CellArray;
 
         /// Datatype for cell coordinates
-        using Coord = typename Grid<_T>::Coord;
+        using Coord = typename GridNearest<_T, _TT>::Coord;
 
         /// Definition of a cell in this grid
         struct Cell : public BaseCell
@@ -82,24 +82,24 @@ namespace ompl
         using CellArray = std::vector<Cell *>;
 
         /// The constructor takes the dimension of the grid as argument
-        explicit GridN(unsigned int dimension) : Grid<_T>(dimension)
+        explicit GridNearestN(unsigned int dimension) : GridNearest<_T, _TT>(dimension)
         {
             hasBounds_ = false;
             overrideCellNeighborsLimit_ = false;
             setDimension(dimension);
         }
 
-        ~GridN() override = default;
+        ~GridNearestN() override = default;
 
         /// Update the dimension of the grid; this should not be done
         /// unless the grid is empty
         void setDimension(unsigned int dimension)
         {
-            assert(Grid<_T>::empty() == true);
-            Grid<_T>::dimension_ = dimension;
-            Grid<_T>::maxNeighbors_ = 2 * dimension;
+            assert((GridNearest<_T, _TT>::empty()));
+            GridNearest<_T, _TT>::dimension_ = dimension;
+            GridNearest<_T, _TT>::maxNeighbors_ = 2 * dimension;
             if (!overrideCellNeighborsLimit_)
-                interiorCellNeighborsLimit_ = Grid<_T>::maxNeighbors_;
+                interiorCellNeighborsLimit_ = GridNearest<_T, _TT>::maxNeighbors_;
         }
 
         void useNeighbor(bool use)
@@ -140,7 +140,22 @@ namespace ompl
         /// Get the cell at a specified coordinate
         Cell *getCell(const Coord &coord) const
         {
-            return static_cast<Cell *>(Grid<_T>::getCell(coord));
+            return static_cast<Cell *>(GridNearest<_T, _TT>::getCell(coord));
+        }
+
+        /** \brief Get the nearest neighbor of a point */
+        _T nearest(const _T &data, const Coord &coord) const override
+        {
+            Cell *cell = getCell(coord);
+            if (cell && !cell->removed)
+                return cell->nn->nearest(data);
+            else if (GridNearest<_T, _TT>::cnn_->size() > 0) 
+            {
+                cell = getCell(GridNearest<_T, _TT>::cnn_->nearest(coord));
+                return cell->nn->nearest(data);
+            }
+            else 
+                throw Exception("No elements found in gridn nearest neighbors data structure");
         }
 
         /// Get the list of neighbors for a given cell
@@ -161,7 +176,7 @@ namespace ompl
         void neighbors(Coord &coord, CellArray &list) const
         {
             BaseCellArray baselist;
-            Grid<_T>::neighbors(coord, baselist);
+            GridNearest<_T, _TT>::neighbors(coord, baselist);
             list.reserve(list.size() + baselist.size());
             for (const auto &c : baselist)
                 list.push_back(static_cast<Cell *>(c));
@@ -191,7 +206,7 @@ namespace ompl
         void neighbors(Coord &coord, int n, std::vector<CellArray> &list, bool ring = false) const
         {
             std::vector<BaseCellArray> baselist;
-            Grid<_T>::neighbors(coord, n, baselist, ring);
+            GridNearest<_T, _TT>::neighbors(coord, n, baselist, ring);
             list.resize(baselist.size());
             if (!ring)
             {
@@ -213,7 +228,6 @@ namespace ompl
             }
         }
 
-        /// A new created cell is always not lazily removed initially
         /// Instantiate a new cell at given coordinates;
         /// Optionally return the list of future neighbors.  Note:
         /// this call only creates the cell, but does not add it to
@@ -221,13 +235,23 @@ namespace ompl
         /// neighboring cells
         BaseCell *createCell(const Coord &coord, BaseCellArray *nbh = nullptr) override
         {
-            auto *cell = new Cell();
+            Cell *cell = new Cell();
             cell->coord = coord;
+            if (GridNearest<_T, _TT>::metric_)
+            {
+                if (GridNearest<_T, _TT>::useThread_)
+                    cell->nn.reset(new NearestNeighborsGNAT<_T>());
+                else
+                    cell->nn.reset(new NearestNeighborsGNATNoThreadSafety<_T>());
+            }
+            else 
+                cell->nn.reset(new NearestNeighborsSqrtApprox<_T>());
+            cell->nn->setDistanceFunction(GridNearest<_T, _TT>::distFun_);
 
             if (useNeighbor_)
             {
                 BaseCellArray *list = nbh ? nbh : new BaseCellArray();
-                Grid<_T>::neighbors(cell->coord, *list);
+                GridNearest<_T, _TT>::neighbors(cell->coord, *list);
 
                 cell->nnbh.reserve(list->size());
                 for (auto cl = list->begin(); cl != list->end(); ++cl)
@@ -252,12 +276,11 @@ namespace ompl
                     delete list;
             }
             else if (nbh)
-                Grid<_T>::neighbors(cell->coord, *nbh);
-
+                GridNearest<_T, _TT>::neighbors(cell->coord, *nbh);
+            
             return cell;
         }
 
-        /// A to be removed cell is always not lazily removed 
         /// Remove a cell from the grid. If the cell has not been
         /// Added to the grid, only update the neighbor list
         bool remove(BaseCell *cell) override
@@ -300,10 +323,11 @@ namespace ompl
                 }
             }
 
-            auto pos = Grid<_T>::hash_.find(&cell->coord);
-            if (pos != Grid<_T>::hash_.end())
+            auto pos = GridNearest<_T, _TT>::hash_.find(&cell->coord);
+            if (pos != GridNearest<_T, _TT>::hash_.end())
             {
-                Grid<_T>::hash_.erase(pos);
+                GridNearest<_T, _TT>::hash_.erase(pos);
+                GridNearest<_T, _TT>::cnn_->remove(cell->coord);
                 return true;
             }
             return false;
@@ -311,7 +335,7 @@ namespace ompl
 
         void add(BaseCell *cell) override
         {
-            Grid<_T>::add(cell); 
+            GridNearest<_T, _TT>::add(cell); 
             if (neighborCell_ > 0)
             {
                 std::vector<CellArray> list;
@@ -339,6 +363,17 @@ namespace ompl
             }
         }
 
+        void add(const _T &data, const Coord &coord) override
+        {
+            BaseCell *cell = GridNearest<_T, _TT>::getCell(coord);
+            if (!cell)
+            {
+                cell = createCell(coord);
+                add(cell);
+            }
+            GridNearest<_T, _TT>::add(data, cell);
+        }
+
         /// Lazily remove a cell from the grid. That is, only update the neighbor list
         virtual bool lazyRemove(BaseCell *cell)
         {
@@ -354,11 +389,12 @@ namespace ompl
                     cl->border = true;
             }
 
-            auto pos = Grid<_T>::hash_.find(&cell->coord);
-            if (pos != Grid<_T>::hash_.end())
+            auto pos = GridNearest<_T, _TT>::hash_.find(&cell->coord);
+            if (pos != GridNearest<_T, _TT>::hash_.end())
             {
                 c->removed = true;
                 removed_++;
+                GridNearest<_T, _TT>::cnn_->remove(cell->coord);
                 return true;
             }
             return false;
@@ -379,11 +415,12 @@ namespace ompl
                     cl->border = false;
             }
 
-            auto pos = Grid<_T>::hash_.find(&cell->coord);
-            if (pos != Grid<_T>::hash_.end())
+            auto pos = GridNearest<_T, _TT>::hash_.find(&cell->coord);
+            if (pos != GridNearest<_T, _TT>::hash_.end())
             {
                 c->removed = false;
                 removed_--;
+                GridNearest<_T, _TT>::cnn_->add(cell->coord);
                 return true;
             }
             return false;
@@ -420,7 +457,7 @@ namespace ompl
         /// Get the set of instantiated cells in the grid
         void getCells(CellArray &cells) const
         {
-            for (const auto &h : Grid<_T>::hash_)
+            for (const auto &h : GridNearest<_T, _TT>::hash_)
                 cells.push_back(static_cast<Cell *>(h.second));
         }
 
@@ -431,7 +468,7 @@ namespace ompl
             unsigned int result = 0;
             if (hasBounds_)
             {
-                for (unsigned int i = 0; i < Grid<_T>::dimension_; ++i)
+                for (unsigned int i = 0; i < GridNearest<_T, _TT>::dimension_; ++i)
                     if (coord[i] <= lowBound_[i] || coord[i] >= upBound_[i])
                         result++;
             }

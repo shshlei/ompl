@@ -86,10 +86,18 @@ namespace ompl
 
             void configurePlannerCollisionRange(double &range);
 
+            void configurePenetrationDistance(double &pen_distance);
+
             /** \brief If \e proj is undefined, it is set to the default
                 projection reported by base::StateSpace::getDefaultProjection().
                 If no default projection is available either, an exception is thrown. */
             void configureProjectionEvaluator(base::ProjectionEvaluatorPtr &proj);
+
+            /** \brief If \e proj is undefined, it is set to the default
+                projection reported by base::StateSpace::getDefaultProjection().
+                If no default projection is available either, an exception is thrown.
+                The projection cell sizes are set same*/
+            void configureProjWithSameCellSize(base::ProjectionEvaluatorPtr &proj);
 
             /** \brief Print the computed configuration parameters */
             void print(std::ostream &out = std::cout) const;

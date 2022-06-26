@@ -57,6 +57,8 @@ namespace ompl
                 s2, using the method SpaceInformation::distance(). */
             Cost motionCost(const State *s1, const State *s2) const override;
 
+            Cost motionCost(const State *s1, const State *s2, unsigned int sub) const override;
+
             /** \brief the motion cost heuristic for this objective is
                 simply the configuration space distance between \e s1
                 and \e s2, since this is the optimal cost between any

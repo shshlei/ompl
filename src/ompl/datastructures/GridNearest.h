@@ -32,10 +32,10 @@
  *  POSSIBILITY OF SUCH DAMAGE.
  *********************************************************************/
 
-/* Authors: Ioan Sucan, Shi Shenglei */
+/* Author: Shi Shenglei */
 
-#ifndef OMPL_DATASTRUCTURES_GRID_
-#define OMPL_DATASTRUCTURES_GRID_
+#ifndef OMPL_DATASTRUCTURES_GRIDNEAREST_
+#define OMPL_DATASTRUCTURES_GRIDNEAREST_
 
 #include <Eigen/Core>
 #include <vector>
@@ -44,12 +44,16 @@
 #include <unordered_map>
 #include <algorithm>
 #include "ompl/util/Exception.h"
+#include "ompl/datastructures/NearestNeighborsSqrtApprox.h"
+#include "ompl/datastructures/NearestNeighborsGNAT.h"
+#include "ompl/datastructures/NearestNeighborsGNATNoThreadSafety.h"
 
 namespace ompl
 {
-    /** \brief Representation of a simple grid */
-    template <typename _T>
-    class Grid
+    /** \brief Representation of a simple grid,
+      and nearest neighbor search can be applied to _T */
+    template <typename _T, typename _TT = int> // todo specialization
+    class GridNearest
     {
     public:
         /// Definition of a coordinate within this grid
@@ -59,10 +63,14 @@ namespace ompl
         struct Cell
         {
             /// The data we store in the cell
-            _T data;
+            std::vector<_T> data;
+
+            _TT auxData;
 
             /// The coordinate of the cell
             Coord coord;
+
+            std::shared_ptr<NearestNeighbors<_T>> nn;
 
             Cell() = default;
 
@@ -74,14 +82,19 @@ namespace ompl
         /// The datatype for arrays of cells
         using CellArray = std::vector<Cell *>;
 
+        /** \brief The definition of a distance function */
+        using DistanceFunction = std::function<double(const _T &, const _T &)>;
+
         /// The constructor takes the dimension of the grid as argument
-        explicit Grid(unsigned int dimension)
+        explicit GridNearest(unsigned int dimension)
         {
             setDimension(dimension);
+            cnn_.reset(new NearestNeighborsGNATNoThreadSafety<Coord>()); 
+            cnn_->setDistanceFunction([](const Coord &a, const Coord &b){return (a - b).template lpNorm<Eigen::Infinity>();});
         }
 
         /// Destructor
-        virtual ~Grid()
+        virtual ~GridNearest()
         {
             freeMemory();
         }
@@ -90,12 +103,7 @@ namespace ompl
         virtual void clear()
         {
             freeMemory();
-        }
-
-        /// Return the dimension of the grid
-        unsigned int getDimension() const
-        {
-            return dimension_;
+            cnn_.reset();
         }
 
         /// Update the dimension of the grid; this should not be done
@@ -106,6 +114,39 @@ namespace ompl
                 throw;
             dimension_ = dimension;
             maxNeighbors_ = 2 * dimension_;
+        }
+
+        /// Return the dimension of the grid
+        unsigned int getDimension() const
+        {
+            return dimension_;
+        }
+
+        void useThread(bool use)
+        {
+            useThread_ = use;
+            if (use)
+                cnn_.reset(new NearestNeighborsGNAT<Coord>()); 
+            else 
+                cnn_.reset(new NearestNeighborsGNATNoThreadSafety<Coord>()); 
+            cnn_->setDistanceFunction([](const Coord &a, const Coord &b){return (a - b).template lpNorm<Eigen::Infinity>();});
+        }
+
+        void metricSpace(bool metric)
+        {
+            metric_ = metric;
+        }
+
+        /** \brief Set the distance function to use */
+        virtual void setDistanceFunction(const DistanceFunction &distFun)
+        {
+            distFun_ = distFun;
+        }
+
+        /** \brief Get the distance function used */
+        const DistanceFunction &getDistanceFunction() const
+        {
+            return distFun_;
         }
 
         /// Check if a cell exists at the specified coordinate
@@ -120,6 +161,59 @@ namespace ompl
             auto pos = hash_.find(const_cast<Coord *>(&coord));
             Cell *c = (pos != hash_.end()) ? pos->second : nullptr;
             return c;
+        }
+
+        /** \brief Get the nearest neighbor of a point */
+        virtual _T nearest(const _T &data, const Coord &coord) const
+        {
+            Cell *cell = getCell(coord);
+            if (cell)
+                return cell->nn->nearest(data);
+            else if (cnn_->size() > 0) 
+            {
+                cell = getCell(cnn_->nearest(coord));
+                return cell->nn->nearest(data);
+            }
+            else 
+                throw Exception("No elements found in grid nearest neighbors data structure");
+        }
+
+        /** \brief Get the k-nearest neighbors of a point
+         *
+         * All the nearest neighbor structures currently return the neighbors in
+         * sorted order, but this is not required.
+         */
+        virtual void nearestK(const _T &data, const Coord &coord, std::size_t k, std::vector<_T> &nbh) const
+        {
+            Cell *cell = getCell(coord);
+            if (cell)
+                return cell->nn->nearestK(data, k, nbh);
+            else if (cnn_->size() > 0) 
+            {
+                cell = getCell(cnn_->nearest(coord));
+                return cell->nn->nearestK(data, k, nbh);
+            }
+            else 
+                throw Exception("No elements found in grid nearestK neighbors data structure");
+        }
+
+        /** \brief Get the nearest neighbors of a point, within a specified radius
+         *
+         * All the nearest neighbor structures currently return the neighbors in
+         * sorted order, but this is not required.
+         */
+        virtual void nearestR(const _T &data, const Coord &coord, double radius, std::vector<_T> &nbh) const
+        {
+            Cell *cell = getCell(coord);
+            if (cell)
+                return cell->nn->nearestR(data, radius, nbh);
+            else if (cnn_->size() > 0) 
+            {
+                cell = getCell(cnn_->nearest(coord));
+                return cell->nn->nearestR(data, radius, nbh);
+            }
+            else 
+                throw Exception("No elements found in grid nearestR neighbors data structure");
         }
 
         /// Get the list of neighbors for a given cell
@@ -293,8 +387,18 @@ namespace ompl
         /// It however updates the neighbor count for neighboring cells
         virtual Cell *createCell(const Coord &coord, CellArray *nbh = nullptr)
         {
-            auto *cell = new Cell();
+            Cell *cell = new Cell();
             cell->coord = coord;
+            if (metric_)
+            {
+                if (useThread_)
+                    cell->nn.reset(new NearestNeighborsGNAT<_T>());
+                else
+                    cell->nn.reset(new NearestNeighborsGNATNoThreadSafety<_T>());
+            }
+            else 
+                cell->nn.reset(new NearestNeighborsSqrtApprox<_T>());
+            cell->nn->setDistanceFunction(distFun_);
             if (nbh)
                 neighbors(cell->coord, *nbh);
             return cell;
@@ -310,6 +414,7 @@ namespace ompl
                 if (pos != hash_.end())
                 {
                     hash_.erase(pos);
+                    cnn_->remove(cell->coord);
                     return true;
                 }
             }
@@ -320,6 +425,51 @@ namespace ompl
         virtual void add(Cell *cell)
         {
             hash_.insert(std::make_pair(&cell->coord, cell));
+            cnn_->add(cell->coord);
+        }
+
+        virtual void add(const _T &data, const Coord &coord)
+        {
+            Cell *cell = getCell(coord);
+            if (!cell)
+            {
+                cell = createCell(coord);
+                add(cell);
+            }
+            add(data, cell);
+        }
+
+        virtual void add(const _T &data, Cell *cell)
+        {
+            cell->data.push_back(data);
+            cell->nn->add(data);
+        }
+
+        virtual bool remove(const _T &data, const Coord &coord)
+        {
+            Cell *cell = getCell(coord);
+            if (cell)
+                return remove(data, cell);
+            else 
+                throw Exception("The to be removed element is not in the grid nearest neighbors data structure");
+            return false;
+        }
+
+        virtual bool remove(const _T &data, Cell *cell)
+        {
+            bool found = false;
+            for (std::size_t i = cell->data.size() - 1; i < cell->data.size(); i--)
+            {
+                if (cell->data[i] == data)
+                {
+                    std::iter_swap(cell->data.begin() + i, cell->data.end() - 1);
+                    cell->data.pop_back();
+                    cell->nn->remove(data);
+                    found = true;
+                    break;
+                }
+            }
+            return found;
         }
 
         /// Clear the memory occupied by a cell; do not call this function unless remove() was called first
@@ -329,7 +479,7 @@ namespace ompl
         }
 
         /// Get the data stored in the cells we are aware of
-        void getContent(std::vector<_T> &content) const
+        void getContent(std::vector<std::vector<_T>> &content) const
         {
             for (const auto &h : hash_)
                 content.push_back(h.second->data);
@@ -655,6 +805,16 @@ namespace ompl
 
         /// The hash holding the cells
         CoordHash hash_;
+
+        std::shared_ptr<NearestNeighbors<Coord>> cnn_;
+
+    protected:
+        /** \brief The used distance function */
+        DistanceFunction distFun_;
+
+        bool useThread_{false};
+
+        bool metric_{true};
     };
 }  // namespace ompl
 

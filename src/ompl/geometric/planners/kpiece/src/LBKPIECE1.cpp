@@ -86,7 +86,7 @@ ompl::base::PlannerStatus ompl::geometric::LBKPIECE1::solve(const base::PlannerT
     {
         auto *motion = new Motion(si_);
         si_->copyState(motion->state, st);
-        motion->root = st;
+        motion->root = motion->state;
         motion->valid = true;
         projectionEvaluator_->computeCoordinates(motion->state, xcoord);
         dStart_.addMotion(motion, xcoord);
@@ -145,6 +145,7 @@ ompl::base::PlannerStatus ompl::geometric::LBKPIECE1::solve(const base::PlannerT
         Motion *existing = nullptr;
         disc.selectMotion(existing, ecell);
         assert(existing);
+        disc.updateCell(ecell);
         sampler_->sampleUniformNear(xstate, existing->state, maxDistance_);
 
         /* create a motion */

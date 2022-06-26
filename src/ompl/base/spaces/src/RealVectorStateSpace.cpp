@@ -119,6 +119,14 @@ void ompl::base::RealVectorStateSpace::setup()
     StateSpace::setup();
 }
 
+void ompl::base::RealVectorStateSpace::resize(std::size_t dim)
+{
+    dimension_ = dim;
+    bounds_.resize(dim);
+    stateBytes_ = dim * sizeof(double);
+    dimensionNames_.resize(dim, "");
+}
+
 void ompl::base::RealVectorStateSpace::addDimension(const std::string &name, double minBound, double maxBound)
 {
     addDimension(minBound, maxBound);

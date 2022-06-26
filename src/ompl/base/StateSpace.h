@@ -207,6 +207,11 @@ namespace ompl
                 return type_;
             }
 
+            virtual unsigned int getSubspaceCount() const
+            {
+                return 1u;
+            }
+
             /** \brief Return true if \e other is a space included (perhaps equal, perhaps a subspace) in this one. */
             bool includes(const StateSpacePtr &other) const;
 
@@ -310,6 +315,8 @@ namespace ompl
                */
             virtual void copyState(State *destination, const State *source) const = 0;
 
+            virtual void copyState(State *destination, const State *source, unsigned int sub) const;
+
             /** \brief Clone a state*/
             State *cloneState(const State *source) const;
 
@@ -317,6 +324,10 @@ namespace ompl
                 metric if isMetricSpace() is true, and its return value will always be between 0 and getMaximumExtent()
                */
             virtual double distance(const State *state1, const State *state2) const = 0;
+
+            virtual double distance(const State *state1, const State *state2, unsigned int sub) const;
+
+            virtual std::vector<double> distanceV(const State *state1, const State *state2) const;
 
             /** \brief Get the number of chars in the serialization of a state in this space */
             virtual unsigned int getSerializationLength() const;
@@ -335,6 +346,8 @@ namespace ompl
                 The memory location of @e state is not required to be different from the memory of either
                 @e from or @e to. */
             virtual void interpolate(const State *from, const State *to, double t, State *state) const = 0;
+
+            virtual void interpolate(const State *from, const State *to, double t, State *state, unsigned int sub) const;
 
             /** \brief Allocate an instance of the default uniform state sampler for this space */
             virtual StateSamplerPtr allocDefaultStateSampler() const = 0;
@@ -622,7 +635,7 @@ namespace ompl
             void addSubspace(const StateSpacePtr &component, double weight);
 
             /** \brief Get the number of state spaces that make up the compound state space */
-            unsigned int getSubspaceCount() const;
+            unsigned int getSubspaceCount() const override;
 
             /** \brief Get a specific subspace from the compound state space */
             const StateSpacePtr &getSubspace(unsigned int index) const;
@@ -691,6 +704,8 @@ namespace ompl
 
             void copyState(State *destination, const State *source) const override;
 
+            void copyState(State *destination, const State *source, unsigned int sub) const override;
+
             unsigned int getSerializationLength() const override;
 
             void serialize(void *serialization, const State *state) const override;
@@ -698,6 +713,10 @@ namespace ompl
             void deserialize(State *state, const void *serialization) const override;
 
             double distance(const State *state1, const State *state2) const override;
+
+            double distance(const State *state1, const State *state2, unsigned int sub) const override;
+
+            std::vector<double> distanceV(const State *state1, const State *state2) const override;
 
             /** \brief When performing discrete validation of motions,
                 the length of the longest segment that does not
@@ -715,6 +734,8 @@ namespace ompl
 
             void interpolate(const State *from, const State *to, double t, State *state) const override;
 
+            void interpolate(const State *from, const State *to, double t, State *state, unsigned int sub) const override;
+
             StateSamplerPtr allocDefaultStateSampler() const override;
 
             State *allocState() const override;
@@ -722,6 +743,8 @@ namespace ompl
             void freeState(State *state) const override;
 
             double *getValueAddressAtIndex(State *state, unsigned int index) const override;
+
+            void registerProjections() override;
 
             /** @} */
 

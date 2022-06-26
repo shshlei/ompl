@@ -32,12 +32,12 @@
 *  POSSIBILITY OF SUCH DAMAGE.
 *********************************************************************/
 
-/* Author: Ioan Sucan, Shi Shenglei */
+/* Author: Shi Shenglei */
 
-#ifndef OMPL_DATASTRUCTURES_GRID_B_
-#define OMPL_DATASTRUCTURES_GRID_B_
+#ifndef OMPL_DATASTRUCTURES_GRIDNEAREST_B_
+#define OMPL_DATASTRUCTURES_GRIDNEAREST_B_
 
-#include "ompl/datastructures/GridN.h"
+#include "ompl/datastructures/GridNearestN.h"
 #include "ompl/datastructures/BinaryHeap.h"
 #include "ompl/util/DisableCompilerWarning.h"
 
@@ -47,18 +47,18 @@ namespace ompl
 {
     /** \brief This class defines a grid that keeps track of its boundary:
      * it distinguishes between interior and exterior cells.  */
-    template <typename _T, class LessThanExternal = std::less<_T>, class LessThanInternal = LessThanExternal>
-    class GridB : public GridN<_T>
+    template <typename _T, typename _TT, class LessThanExternal = std::less<_TT>, class LessThanInternal = LessThanExternal>
+    class GridNearestB : public GridNearestN<_T, _TT>
     {
     public:
         /// Definition of a cell in this grid
-        using Cell = typename GridN<_T>::Cell;
+        using Cell = typename GridNearestN<_T, _TT>::Cell;
 
         /// The datatype for arrays of cells
-        using CellArray = typename GridN<_T>::CellArray;
+        using CellArray = typename GridNearestN<_T, _TT>::CellArray;
 
         /// Datatype for cell coordinates
-        using Coord = typename GridN<_T>::Coord;
+        using Coord = typename GridNearestN<_T, _TT>::Coord;
 
     protected:
         /// \cond IGNORE
@@ -84,12 +84,12 @@ namespace ompl
         using EventCellUpdate = void (*)(Cell *, void *);
 
         /// Constructor
-        explicit GridB(unsigned int dimension) : GridN<_T>(dimension)
+        explicit GridNearestB(unsigned int dimension) : GridNearestN<_T, _TT>(dimension)
         {
             setupHeaps();
         }
 
-        ~GridB() override
+        ~GridNearestB() override
         {
             clearHeaps();
         }
@@ -181,8 +181,18 @@ namespace ompl
         /// Create a cell but do not add it to the grid; update neighboring cells however
         virtual Cell *createCell(const Coord &coord, CellArray *nbh = nullptr)
         {
-            CellX *cell = new CellX();
+            auto *cell = new CellX();
             cell->coord = coord;
+            if (GridNearestN<_T, _TT>::metric_)
+            {
+                if (GridNearestN<_T, _TT>::useThread_)
+                    cell->nn.reset(new NearestNeighborsGNAT<_T>());
+                else
+                    cell->nn.reset(new NearestNeighborsGNATNoThreadSafety<_T>());
+            }
+            else 
+                cell->nn.reset(new NearestNeighborsSqrtApprox<_T>());
+            cell->nn->setDistanceFunction(GridNearestN<_T, _TT>::distFun_);
 
             CellArray *list = nbh ? nbh : new CellArray();
             this->neighbors(cell->coord, *list);
@@ -196,18 +206,18 @@ namespace ompl
                 cl->nnbh.push_back(cell);
                 wasBorder.push_back(cl->border);
                 cl->neighbors++;
-                if (cl->border && cl->neighbors >= GridN<_T>::interiorCellNeighborsLimit_)
+                if (cl->border && cl->neighbors >= GridNearestN<_T, _TT>::interiorCellNeighborsLimit_)
                     cl->border = false;
             }
 
-            if (GridN<_T>::removed_)
+            if (GridNearestN<_T, _TT>::removed_)
             {
-                std::size_t i = 0;
                 for (auto & cl : *list)
                 {
+                    std::size_t i =0;
                     if (!cl->removed)
                     {
-                        CellX *c = static_cast<CellX *>(cl);
+                        auto *c = static_cast<CellX *>(cl);
                         eventCellUpdate_(c, eventCellUpdateData_);
                         if (c->border)
                             external_.update(reinterpret_cast<typename externalBHeap::Element *>(c->heapElement));
@@ -227,10 +237,10 @@ namespace ompl
             }
             else 
             {
-                std::size_t i = 0;
                 for (auto & cl : *list)
                 {
-                    CellX *c = static_cast<CellX *>(cl);
+                    std::size_t i =0;
+                    auto *c = static_cast<CellX *>(cl);
                     eventCellUpdate_(c, eventCellUpdateData_);
                     if (c->border)
                         external_.update(reinterpret_cast<typename externalBHeap::Element *>(c->heapElement));
@@ -248,12 +258,12 @@ namespace ompl
                 }
             }
 
-            cell->neighbors = GridN<_T>::numberOfBoundaryDimensions(cell->coord);
-            if (GridN<_T>::removed_)
+            cell->neighbors = GridNearestN<_T, _TT>::numberOfBoundaryDimensions(cell->coord);
+            if (GridNearestN<_T, _TT>::removed_)
                 cell->neighbors += std::accumulate(list->begin(), list->end(), 0, [](int a, Cell *b){ int bb = b->removed ? 0 : 1; return a + bb;});
             else
                 cell->neighbors += list->size();
-            if (cell->border && cell->neighbors >= GridN<_T>::interiorCellNeighborsLimit_)
+            if (cell->border && cell->neighbors >= GridNearestN<_T, _TT>::interiorCellNeighborsLimit_)
                 cell->border = false;
 
             if (!nbh)
@@ -268,7 +278,7 @@ namespace ompl
             auto *ccell = static_cast<CellX *>(cell);
             eventCellUpdate_(ccell, eventCellUpdateData_);
 
-            GridN<_T>::add(cell);
+            GridNearestN<_T, _TT>::add(cell);
 
             if (cell->border)
                 external_.insert(ccell);
@@ -281,16 +291,14 @@ namespace ompl
         {
             if (!cell)
                 return false;
-
             std::vector<bool> wasBorder;
             wasBorder.reserve(cell->nnbh.size());
             for (auto & cl : cell->nnbh)
             {
                 wasBorder.push_back(cl->border);
                 cl->neighbors--;
-                if (!cl->border && cl->neighbors < GridN<_T>::interiorCellNeighborsLimit_)
+                if (!cl->border && cl->neighbors < GridNearestN<_T, _TT>::interiorCellNeighborsLimit_)
                     cl->border = true;
-
                 for (std::size_t i = cl->nnbh.size() - 1; i < cl->nnbh.size(); i--)
                 {
                     if (cl->nnbh[i] == cell)
@@ -302,11 +310,11 @@ namespace ompl
                 }
             }
 
-            if (GridN<_T>::removed_)
+            if (GridNearestN<_T, _TT>::removed_)
             {
-                std::size_t i = 0;
                 for (auto & cl : cell->nnbh)
                 {
+                    std::size_t i = 0;
                     if (!cl->removed)
                     {
                         CellX *c = static_cast<CellX *>(cl);
@@ -329,9 +337,9 @@ namespace ompl
             }
             else 
             {
-                std::size_t i = 0;
                 for (auto & cl : cell->nnbh)
                 {
+                    std::size_t i =0;
                     CellX *c = static_cast<CellX *>(cl);
                     eventCellUpdate_(c, eventCellUpdateData_);
                     if (c->border)
@@ -366,10 +374,11 @@ namespace ompl
                 }
             }
 
-            auto pos = GridN<_T>::hash_.find(&cell->coord);
-            if (pos != GridN<_T>::hash_.end())
+            auto pos = GridNearestN<_T, _TT>::hash_.find(&cell->coord);
+            if (pos != GridNearestN<_T, _TT>::hash_.end())
             {
-                GridN<_T>::hash_.erase(pos);
+                GridNearestN<_T, _TT>::hash_.erase(pos);
+                GridNearestN<_T, _TT>::cnn_->remove(cell->coord);
                 auto *cx = static_cast<CellX *>(cell);
                 if (cx->border)
                     external_.remove(reinterpret_cast<typename externalBHeap::Element *>(cx->heapElement));
@@ -378,6 +387,50 @@ namespace ompl
                 return true;
             }
             return false;
+        }
+
+        virtual void add(const _T &data, const Coord &coord)
+        {
+            Cell *cell = GridNearestN<_T, _TT>::getCell(coord);
+            if (!cell)
+            {
+                cell = createCell(coord);
+                add(cell);
+            }
+            add(data, cell);
+        }
+
+        virtual void add(const _T &data, Cell *cell)
+        {
+            cell->data.push_back(data);
+            cell->nn->add(data);
+        }
+
+        virtual bool remove(const _T &data, const Coord &coord)
+        {
+            Cell *cell = GridNearestN<_T, _TT>::getCell(coord);
+            if (cell)
+                return remove(data, cell);
+            else 
+                throw Exception("The to be removed element is not in the grid nearest neighbors data structure");
+            return false;
+        }
+
+        virtual bool remove(const _T &data, Cell *cell)
+        {
+            bool found = false;
+            for (std::size_t i = cell->data.size() - 1; i < cell->data.size(); i--)
+            {
+                if (cell->data[i] == data)
+                {
+                    std::iter_swap(cell->data.begin() + i, cell->data.end() - 1);
+                    cell->data.pop_back();
+                    cell->nn->remove(data);
+                    found = true;
+                    break;
+                }
+            }
+            return found;
         }
 
         /// Remove a cell from the grid
@@ -391,7 +444,7 @@ namespace ompl
             {
                 bool wasBorder = cl->border;
                 cl->neighbors--;
-                if (!cl->border && cl->neighbors < GridN<_T>::interiorCellNeighborsLimit_)
+                if (!cl->border && cl->neighbors < GridNearestN<_T, _TT>::interiorCellNeighborsLimit_)
                     cl->border = true;
 
                 if (!cl->removed)
@@ -413,11 +466,12 @@ namespace ompl
                 }
             }
 
-            auto pos = GridN<_T>::hash_.find(&cell->coord);
-            if (pos != GridN<_T>::hash_.end())
+            auto pos = GridNearestN<_T, _TT>::hash_.find(&cell->coord);
+            if (pos != GridNearestN<_T, _TT>::hash_.end())
             {
                 cell->removed = true;
-                GridN<_T>::removed_++;
+                GridNearestN<_T, _TT>::removed_++;
+                GridNearestN<_T, _TT>::cnn_->remove(cell->coord);
                 auto *cx = static_cast<CellX *>(cell);
                 if (cx->border)
                     external_.remove(reinterpret_cast<typename externalBHeap::Element *>(cx->heapElement));
@@ -439,7 +493,7 @@ namespace ompl
             {
                 bool wasBorder = cl->border;
                 cl->neighbors++;
-                if (cl->border && cl->neighbors >= GridN<_T>::interiorCellNeighborsLimit_)
+                if (cl->border && cl->neighbors >= GridNearestN<_T, _TT>::interiorCellNeighborsLimit_)
                     cl->border = false;
 
                 if (!cl->removed)
@@ -468,23 +522,24 @@ namespace ompl
             else
                 internal_.insert(ccell);
 
-            auto pos = GridN<_T>::hash_.find(&cell->coord);
-            if (pos != GridN<_T>::hash_.end())
+            auto pos = GridNearestN<_T, _TT>::hash_.find(&cell->coord);
+            if (pos != GridNearestN<_T, _TT>::hash_.end())
             {
                 cell->removed = false;
-                GridN<_T>::removed_--;
+                GridNearestN<_T, _TT>::removed_--;
+                GridNearestN<_T, _TT>::cnn_->add(cell->coord);
             }
         }
 
         void clear() override
         {
-            GridN<_T>::clear();
+            GridNearestN<_T, _TT>::clear();
             clearHeaps();
         }
 
         void status(std::ostream &out = std::cout) const override
         {
-            GridN<_T>::status(out);
+            GridNearestN<_T, _TT>::status(out);
             out << countInternal() << " internal cells" << std::endl;
             out << countExternal() << " external cells" << std::endl;
         }
@@ -522,7 +577,7 @@ namespace ompl
         {
             bool operator()(const CellX *const a, const CellX *const b) const
             {
-                return lt_(a->data, b->data);
+                return lt_(a->auxData, b->auxData);
             }
 
         private:
@@ -534,7 +589,7 @@ namespace ompl
         {
             bool operator()(const CellX *const a, const CellX *const b) const
             {
-                return lt_(a->data, b->data);
+                return lt_(a->auxData, b->auxData);
             }
 
         private:

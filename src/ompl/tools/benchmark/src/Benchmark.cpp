@@ -446,7 +446,6 @@ void ompl::tools::Benchmark::benchmark(const Request &req)
         progress.reset(new ompl::time::ProgressDisplay);
     }
 
-    machine::MemUsage_t memStart = machine::getProcessMemoryUsage();
     auto maxMemBytes = (machine::MemUsage_t)(req.maxMem * 1024 * 1024);
 
     for (unsigned int i = 0; i < planners_.size(); ++i)
@@ -549,6 +548,7 @@ void ompl::tools::Benchmark::benchmark(const Request &req)
             }
 
             RunPlanner rp(this);
+            machine::MemUsage_t memStart = machine::getProcessMemoryUsage();
             rp.run(planners_[i], memStart, maxMemBytes, maxTime, req.timeBetweenUpdates);
             bool solved = gsetup_ ? gsetup_->haveSolutionPath() : csetup_->haveSolutionPath();
 
@@ -558,7 +558,7 @@ void ompl::tools::Benchmark::benchmark(const Request &req)
                 RunProperties run;
 
                 run["time REAL"] = ompl::toString(rp.getTimeUsed());
-                run["memory REAL"] = ompl::toString((double)rp.getMemUsed() / (1024.0 * 1024.0));
+                run["memory REAL"] = ompl::toString((double)(rp.getMemUsed() - memStart) / (1024.0 * 1024.0));
                 run["status ENUM"] = std::to_string((int)static_cast<base::PlannerStatus::StatusType>(rp.getStatus()));
                 if (gsetup_)
                 {

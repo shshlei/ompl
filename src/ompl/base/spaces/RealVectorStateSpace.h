@@ -113,6 +113,8 @@ namespace ompl
 
             ~RealVectorStateSpace() override = default;
 
+            void resize(std::size_t size);
+
             /** \brief Increase the dimensionality of the state space by 1. Optionally, bounds can be specified for this
              * added dimension. setup() will need to be called after adding dimensions. */
             void addDimension(double minBound = 0.0, double maxBound = 0.0);
@@ -201,8 +203,6 @@ namespace ompl
 
             /** \brief Map from names to index values for dimensions */
             std::map<std::string, unsigned int> dimensionIndex_;
-
-            RNG rng_;
 
         private:
             /** \brief The size of a state, in bytes */

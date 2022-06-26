@@ -223,6 +223,13 @@ void ompl::geometric::SimpleSetup::getPlannerData(base::PlannerData &pd) const
         planner_->getPlannerData(pd);
 }
 
+void ompl::geometric::SimpleSetup::getPlannerData(base::PlannerData &pd, int sub) const
+{
+    pd.clear();
+    if (planner_)
+        planner_->getPlannerData(pd, sub);
+}
+
 void ompl::geometric::SimpleSetup::print(std::ostream &out) const
 {
     if (si_)

@@ -120,6 +120,22 @@ namespace ompl
                 }
             }
 
+            void configurePenetrationDistance(double &range, const std::string &context)
+            {
+                if (range < std::numeric_limits<double>::epsilon())
+                {
+                    base::SpaceInformationPtr si = wsi_.lock();
+                    if (si)
+                    {
+                        range = si->getMaximumExtent() * magic::MAX_PENETATION_DISTANCE_AS_SPACE_EXTENT_FRACTION;
+                        OMPL_DEBUG("%sPenetation distance detected to be %lf", context.c_str(), range);
+                    }
+                    else
+                        OMPL_ERROR("%sUnable to detect penetration distance. SpaceInformation instance has expired.",
+                                   context.c_str());
+                }
+            }
+
             void configureProjectionEvaluator(base::ProjectionEvaluatorPtr &proj, const std::string &context)
             {
                 base::SpaceInformationPtr si = wsi_.lock();
@@ -128,6 +144,23 @@ namespace ompl
                 {
                     OMPL_INFORM("%sAttempting to use default projection.", context.c_str());
                     proj = si->getStateSpace()->getDefaultProjection();
+                }
+                if (!proj)
+                    throw Exception("No projection evaluator specified");
+                proj->setup();
+            }
+
+            void configureProjWithSameCellSize(base::ProjectionEvaluatorPtr &proj, const std::string &context)
+            {
+                base::SpaceInformationPtr si = wsi_.lock();
+                checkSetup(si);
+                if (!proj && si)
+                {
+                    OMPL_INFORM("%sAttempting to use default projection.", context.c_str());
+                    proj = si->getStateSpace()->getDefaultProjection();
+                    const std::vector<double> &sizes = proj->getCellSizes();
+                    double minsize = *std::min_element(sizes.begin(), sizes.end());
+                    proj->setCellSizes(std::vector<double>(sizes.size(), 2.0 * minsize));
                 }
                 if (!proj)
                     throw Exception("No projection evaluator specified");
@@ -250,10 +283,22 @@ void ompl::tools::SelfConfig::configurePlannerCollisionRange(double &range)
     impl_->configurePlannerCollisionRange(range, context_);
 }
 
+void ompl::tools::SelfConfig::configurePenetrationDistance(double &range)
+{
+    std::lock_guard<std::mutex> iLock(impl_->lock_);
+    impl_->configurePenetrationDistance(range, context_);
+}
+
 void ompl::tools::SelfConfig::configureProjectionEvaluator(base::ProjectionEvaluatorPtr &proj)
 {
     std::lock_guard<std::mutex> iLock(impl_->lock_);
     return impl_->configureProjectionEvaluator(proj, context_);
+}
+
+void ompl::tools::SelfConfig::configureProjWithSameCellSize(base::ProjectionEvaluatorPtr &proj)
+{
+    std::lock_guard<std::mutex> iLock(impl_->lock_);
+    return impl_->configureProjWithSameCellSize(proj, context_);
 }
 
 void ompl::tools::SelfConfig::print(std::ostream &out) const

@@ -130,6 +130,16 @@ namespace ompl
                 return stateSpace_->distance(state1, state2);
             }
 
+            double distance(const State *state1, const State *state2, unsigned int sub) const
+            {
+                return stateSpace_->distance(state1, state2, sub);
+            }
+
+            std::vector<double> distanceV(const State *state1, const State *state2) const
+            {
+                return stateSpace_->distanceV(state1, state2);
+            }
+
             /** \brief Bring the state within the bounds of the state space */
             void enforceBounds(State *state) const
             {
@@ -264,6 +274,11 @@ namespace ompl
             void copyState(State *destination, const State *source) const
             {
                 stateSpace_->copyState(destination, source);
+            }
+
+            void copyState(State *destination, const State *source, unsigned int sub) const
+            {
+                stateSpace_->copyState(destination, source, sub);
             }
 
             /** \brief Clone a state */

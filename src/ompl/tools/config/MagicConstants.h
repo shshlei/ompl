@@ -74,6 +74,8 @@ namespace ompl
 
         static const double MAX_COLLISION_CHECK_LENGTH_AS_SPACE_EXTENT_FRACTION = 0.05;
 
+        static const double MAX_PENETATION_DISTANCE_AS_SPACE_EXTENT_FRACTION = 0.075;
+
         /** \brief For cost-based planners it has been observed that smaller ranges
             are typically suitable. The same range computation strategy is used for all
             planners, but for cost planners an additional factor (smaller than 1) is

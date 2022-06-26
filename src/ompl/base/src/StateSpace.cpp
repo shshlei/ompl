@@ -230,6 +230,25 @@ ompl::base::State *ompl::base::StateSpace::cloneState(const State *source) const
     return copy;
 }
 
+void ompl::base::StateSpace::copyState(State *destination, const State *source, unsigned int sub) const
+{
+    (void)(sub);
+    copyState(destination, source);
+}
+
+double ompl::base::StateSpace::distance(const State *state1, const State *state2, unsigned int sub) const
+{
+    (void)(sub);
+    return distance(state1, state2);
+}
+
+std::vector<double> ompl::base::StateSpace::distanceV(const State *state1, const State *state2) const
+{
+    std::vector<double> dist(1);
+    dist[0] = distance(state1, state2);
+    return dist;
+}
+
 void ompl::base::StateSpace::registerProjections()
 {
 }
@@ -787,6 +806,12 @@ bool ompl::base::StateSpace::hasSymmetricInterpolate() const
     return true;
 }
 
+void ompl::base::StateSpace::interpolate(const State *from, const State *to, double t, State *state, unsigned int sub) const
+{
+    (void)(sub);
+    interpolate(from, to, t, state);
+}
+
 void ompl::base::StateSpace::setStateSamplerAllocator(const StateSamplerAllocator &ssa)
 {
     ssa_ = ssa;
@@ -1042,6 +1067,13 @@ void ompl::base::CompoundStateSpace::copyState(State *destination, const State *
         components_[i]->copyState(cdest->components[i], csrc->components[i]);
 }
 
+void ompl::base::CompoundStateSpace::copyState(State *destination, const State *source, unsigned int sub) const
+{
+    auto *cdest = static_cast<CompoundState *>(destination);
+    const auto *csrc = static_cast<const CompoundState *>(source);
+    components_[sub]->copyState(cdest->components[sub], csrc->components[sub]);
+}
+
 unsigned int ompl::base::CompoundStateSpace::getSerializationLength() const
 {
     unsigned int l = 0;
@@ -1079,6 +1111,24 @@ double ompl::base::CompoundStateSpace::distance(const State *state1, const State
     double dist = 0.0;
     for (unsigned int i = 0; i < componentCount_; ++i)
         dist += weights_[i] * components_[i]->distance(cstate1->components[i], cstate2->components[i]);
+    return dist;
+}
+
+double ompl::base::CompoundStateSpace::distance(const State *state1, const State *state2, unsigned int sub) const
+{
+    assert(sub < componentCount_);
+    const auto *cstate1 = static_cast<const CompoundState *>(state1);
+    const auto *cstate2 = static_cast<const CompoundState *>(state2);
+    return components_[sub]->distance(cstate1->components[sub], cstate2->components[sub]);
+}
+
+std::vector<double> ompl::base::CompoundStateSpace::distanceV(const State *state1, const State *state2) const
+{
+    std::vector<double> dist(componentCount_);
+    const auto *cstate1 = static_cast<const CompoundState *>(state1);
+    const auto *cstate2 = static_cast<const CompoundState *>(state2);
+    for (unsigned int i = 0; i < componentCount_; ++i)
+        dist[i] = components_[i]->distance(cstate1->components[i], cstate2->components[i]);
     return dist;
 }
 
@@ -1120,6 +1170,14 @@ void ompl::base::CompoundStateSpace::interpolate(const State *from, const State 
     auto *cstate = static_cast<CompoundState *>(state);
     for (unsigned int i = 0; i < componentCount_; ++i)
         components_[i]->interpolate(cfrom->components[i], cto->components[i], t, cstate->components[i]);
+}
+
+void ompl::base::CompoundStateSpace::interpolate(const State *from, const State *to, const double t, State *state, unsigned int sub) const
+{
+    const auto *cfrom = static_cast<const CompoundState *>(from);
+    const auto *cto = static_cast<const CompoundState *>(to);
+    auto *cstate = static_cast<CompoundState *>(state);
+    components_[sub]->interpolate(cfrom->components[sub], cto->components[sub], t, cstate->components[sub]);
 }
 
 ompl::base::StateSamplerPtr ompl::base::CompoundStateSpace::allocDefaultStateSampler() const
@@ -1197,6 +1255,70 @@ double *ompl::base::CompoundStateSpace::getValueAddressAtIndex(State *state, con
                 break;
         }
     return nullptr;
+}
+
+void ompl::base::CompoundStateSpace::registerProjections()
+{
+    class DefaultProjection : public ProjectionEvaluator
+    {
+    public:
+        DefaultProjection(const StateSpace *space) : ProjectionEvaluator(space)
+        {
+            cs_ = space_->as<CompoundStateSpace>();
+        }
+
+        void setup() override
+        {
+            dim_ = 0;
+            sdims_.clear();
+            for (std::size_t i = 0; i < cs_->getSubspaceCount(); i++)
+            {
+                unsigned int dim = cs_->getSubspace(i)->getDefaultProjection()->getDimension();
+                dim_ += dim;
+                sdims_.push_back(dim);
+            }
+            ProjectionEvaluator::setup();
+        }
+
+        unsigned int getDimension() const override
+        {
+            return dim_;
+        }
+
+        void defaultCellSizes() override
+        {
+            bounds_.low.clear();
+            bounds_.high.clear();
+            cellSizes_.clear();
+            for (std::size_t i = 0; i < cs_->getSubspaceCount(); i++)
+            {
+                auto proj = cs_->getSubspace(i)->getDefaultProjection();
+                RealVectorBounds bounds = proj->getBounds();
+                bounds_.low.insert(bounds_.low.end(), bounds.low.begin(), bounds.low.end());
+                bounds_.high.insert(bounds_.high.end(), bounds.high.begin(), bounds.high.end());
+                const std::vector<double> &csizes = proj->getCellSizes();
+                cellSizes_.insert(cellSizes_.end(), csizes.begin(), csizes.end());
+            }
+        }
+
+        void project(const State *state, Eigen::Ref<Eigen::VectorXd> projection) const override
+        {
+            const auto *cstate = static_cast<const CompoundState *>(state);
+            unsigned int index = 0;
+            for (std::size_t i = 0; i < cs_->getSubspaceCount(); i++)
+            {
+                unsigned int dim = sdims_[i];
+                auto proj = cs_->getSubspace(i)->getDefaultProjection();
+                proj->project(cstate->components[i], projection.segment(index, dim));
+                index += dim;
+            }
+        }
+    private:
+        unsigned int dim_{0};
+        std::vector<unsigned int> sdims_;
+        const CompoundStateSpace *cs_{nullptr};
+    };
+    registerDefaultProjection(std::make_shared<DefaultProjection>(this));
 }
 
 void ompl::base::CompoundStateSpace::printState(const State *state, std::ostream &out) const
