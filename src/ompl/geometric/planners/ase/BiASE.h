@@ -34,11 +34,10 @@
 
 /* Author: Shi Shenglei*/
 
-#ifndef OMPL_GEOMETRIC_PLANNERS_HSC_BIHSC_
-#define OMPL_GEOMETRIC_PLANNERS_HSC_BIHSC_
+#ifndef OMPL_GEOMETRIC_PLANNERS_ASE_BIASE_
+#define OMPL_GEOMETRIC_PLANNERS_ASE_BIASE_
 
 #include "ompl/geometric/planners/PlannerIncludes.h"
-#include "ompl/geometric/planners/hsc/SimpleGrid.h"
 
 #include "ompl/datastructures/NearestNeighbors.h"
 #include "ompl/datastructures/BinaryHeap.h"
@@ -47,35 +46,25 @@
 #include "ompl/datastructures/PDF.h"
 
 #include "ompl/base/State.h"
-#include "ompl/base/SafetyCertificate.h"
 #include "ompl/base/OptimizationObjective.h"
 #include "ompl/base/ProjectionEvaluator.h"
 
+#include "ompl/base/samplers/AdInformedStateSampler.h"
+
 #include <unordered_set>
-#include <queue>
-#include <deque>
-#include <utility>
 
 namespace ompl
 {
     namespace geometric
     {
-        /** \brief Bidirectional Hybrid Safety Certificate */
-        class BiHSC : public base::Planner
+        /** \brief Bidirectional Adaptive Space Expansion */
+        class BiASE : public base::Planner
         {
         public:
 
-            /** \brief Check if the state is certificated as collision-free by sc, and return the certificate distances */
-            using SafetyCertificateChecker = std::function<bool(const base::State *state, const base::SafetyCertificate *sc, std::vector<double> &dist)>;
+            BiASE(const base::SpaceInformationPtr &si);
 
-            using CollisionCertificateChecker = std::function<bool(const base::State *state, const std::vector<base::SafetyCertificate *> &ocv)>;
-
-            /** \brief Calculate the certificate distances between two states */
-            using DistanceCertificate = std::function<std::vector<double>(const base::State *a, const base::State *b)>;
-
-            BiHSC(const base::SpaceInformationPtr &si);
-
-            ~BiHSC() override;
+            ~BiASE() override;
 
             void setup() override;
 
@@ -103,67 +92,6 @@ namespace ompl
             double getPenDistance() const
             {
                 return penDistance_;
-            }
-
-            void setLazyPath(bool lazy)
-            {
-                lazyPath_ = lazy;
-                if (!lazyPath_)
-                    lazyNode_ = false;
-            }
-
-            bool getLazyPath() const
-            {
-                return lazyPath_;
-            }
-
-            void setLazyNode(bool lazy)
-            {
-                if (lazy)
-                    lazyPath_ = true;
-                lazyNode_ = lazy;
-            }
-
-            bool getLazyNode() const
-            {
-                return lazyNode_;
-            }
-
-            void setMaxInvalidNodeRatio(double ratio)
-            {
-                maxInvalidNodeRatio_ = ratio;
-            }
-
-            double getMaxInvalidNodeRatio() const
-            {
-                return maxInvalidNodeRatio_;
-            }
-
-            void setAddIntermediateState(bool add)
-            {
-                addIntermediateState_ = add;
-            }
-
-            bool getAddIntermediateState() const
-            {
-                return addIntermediateState_;
-            }
-
-            /** \brief When extending a motion, the planner can decide
-                to keep the first valid part of it, even if invalid
-                states are found, as long as the valid part represents
-                a sufficiently large fraction from the original
-                motion. This function sets the minimum acceptable
-                fraction. */
-            void setMinValidPathFraction(double fraction)
-            {
-                minValidPathFraction_ = fraction;
-            }
-
-            /** \brief Get the value of the fraction set by setMinValidPathFraction() */
-            double getMinValidPathFraction() const
-            {
-                return minValidPathFraction_;
             }
 
             void setUseBispace(bool bispace)
@@ -208,14 +136,14 @@ namespace ompl
                 return treatedAsMultiSubapce_;
             }
 
-            void setRewire(bool rewire)
+            void setBackRewire(bool rewire)
             {
-                rewire_ = rewire;
+                backRewire_ = rewire;
             }
 
-            bool getRewire() const
+            bool getBackRewire() const
             {
-                return rewire_;
+                return backRewire_;
             }
 
             void setRewireSort(bool rewire)
@@ -228,59 +156,40 @@ namespace ompl
                 return rewireSort_;
             }
 
-            void setUseCollisionCertificateChecker(bool use)
+            void setInformedSampling(bool informedSampling)
             {
-                useCollisionCertificateChecker_ = use;
+                useInformedSampling_ = informedSampling;
             }
 
-            bool getUseCollisionCertificateChecker() const
+            bool getInformedSampling() const
             {
-                return useCollisionCertificateChecker_;
+                return useInformedSampling_;
             }
 
-            void setSafetyCertificateChecker(const SafetyCertificateChecker &safetyCertificateChecker)
+            void setSampleRejection(bool reject)
             {
-                safetyCertificateChecker_ = safetyCertificateChecker;
+                useRejectionSampling_ = reject;
             }
 
-            void setCollisionCertificateChecker(const CollisionCertificateChecker &collisionCertificateChecker)
+            bool getSampleRejection() const
             {
-                collisionCertificateChecker_ = collisionCertificateChecker;
+                return useRejectionSampling_;
             }
 
-            void setDistanceCertificate(const DistanceCertificate &distanceCertificate)
+            void setNumSamplingAttempts(unsigned int numAttempts)
             {
-                distanceCertificate_ = distanceCertificate;
+                numSampleAttempts_ = numAttempts;
             }
 
-            void setCertificateDim(unsigned int certificateDim)
+            unsigned int getNumSamplingAttempts() const
             {
-                certificateDim_ = certificateDim;
-            }
-
-            unsigned int getCertificateDim() const 
-            {
-                return certificateDim_;
+                return numSampleAttempts_;
             }
 
         protected:
 
             ////////////////////////////////////////////////////////////////////////////////////////////////////
             // general functions
-            enum StateValid
-            {
-                UnCkecked,
-                InValid,
-                Valid 
-            };
-
-            enum PathValid
-            {
-                UnCkeckedP,
-                LazyValid,
-                ValidP 
-            };
-
             class Motion;
 
             struct CellData
@@ -330,7 +239,7 @@ namespace ompl
                 }
                 inline bool operator()(Motion * motion1, Motion * motion2)
                 {
-                    if (motion1->valid == ValidP && motion2->valid == ValidP)
+                    if (motion1->valid && motion2->valid)
                     {
                         std::size_t len1 = 0, len2 = 0;
                         Motion *motion = motion1;
@@ -348,7 +257,7 @@ namespace ompl
                         return len1 < len2;
                     }
                     else
-                        return motion2->valid == ValidP;
+                        return motion2->valid;
                 }
             };
 
@@ -396,18 +305,6 @@ namespace ompl
                 base::OptimizationObjectivePtr opt_;
             };
 
-            struct SafetyCertificateWithElems 
-            {
-                base::SafetyCertificate *sc;
-                std::vector<Motion *> objects;
-            };
-
-            struct SafetyCertificatePairs
-            {
-                SafetyCertificateWithElems *sce;
-                std::vector<double> scd;
-            };
-
             /** \brief Representation of a motion */
             class Motion
             {
@@ -431,9 +328,7 @@ namespace ompl
 
                 Cell *cell{nullptr};
 
-                StateValid stateValid{UnCkecked};
-
-                PathValid valid{UnCkeckedP};
+                bool valid{false};
 
                 bool inConnection{false};
 
@@ -457,11 +352,6 @@ namespace ompl
 
                 /** \brief Handle to identify the motion in the queue */
                 BinaryHeap<Motion *, MotionCompare>::Element *handle{nullptr};
-
-                SafetyCertificateWithElems *sce{nullptr};
-
-                /** \brief The certificate distance between the motion and its certificate node */
-                std::vector<double> scd;
             };
 
             /** \brief Compute distance between motions (actually distance between contained states) */
@@ -481,11 +371,17 @@ namespace ompl
             /** \brief A nearest-neighbor datastructure representing a tree of motions */
             using TreeData = std::shared_ptr<NearestNeighbors<Motion *>>;
 
+            base::PlannerStatus prepareSolve(const base::PlannerTerminationCondition &ptc);
+
             void processSolution(const Motion *bestStartMotion, const Motion *bestGoalMotion);
 
-            bool batchGrow(bool &startTree);
-
             /** feasible */
+            bool growTree(TreeGrowingInfo &tgi, Motion *rmotion, bool &otherSide, bool &change, bool &add);
+
+            bool growTreeSingleSpace(TreeGrowingInfo &tgi, Motion *rmotion, bool &otherSide, bool &change, bool &add);
+
+            bool growTreeMultiSpace(TreeGrowingInfo &tgi, Motion *rmotion, bool &otherSide, bool &change, bool &add);
+
             Motion *selectNMotion(const TreeData &tree, Motion *rmotion, bool &null);
 
             Motion *selectMotionInCell(Cell *cell);
@@ -506,35 +402,15 @@ namespace ompl
 
             void updateQueue(BinaryHeap<Motion *, MotionCompare> &bh, Motion *m);
 
-            bool isPathValid(Motion *motion, Motion *otherMotion, bool start);
+//            bool biasGrow(TreeData &tree, TreeGrowingInfo &tgi, Motion *&rmotion, bool optimal = false);
 
-            /** \brief Check if the connected path is valid */
-            bool isPathValid(Motion *motion, Motion *otherMotion);
-
-            /** \brief Check from the root to the connect point, stop immediately if an invalid path is found  */
-            bool isPathValid(Motion *motion, bool start);
-
-            /** \brief Check from the connect point to the root */
-            bool isPathValidInter(Motion *motion, bool start);
-
-            bool isPathValidLazy(Motion *motion, bool start);
+            bool backPathRewireMotion(Motion *motion, bool start, Motion *&pmotion);
 
             void addToDisc(CellDiscretizationData &disc, Motion *motion, const Coord& coord);
 
             void removeFromDisc(CellDiscretizationData &disc, Motion *motion);
 
-            void removeInvalidMotionsDirectly();
-
-            void removeInvalidMotionsDirectlyTree();
-
-            void addToTree(TreeData &tree, Motion *motion);
-
             struct MotionPDF;
-            void removeFromTree(MotionPDF &pdf, Motion *motion);
-
-            void removeInvalidMotions();
-
-            void removeInvalidMotionsTree(double ratio);
 
             void enableMotionInDisc(Motion *motion);
 
@@ -543,13 +419,15 @@ namespace ompl
             /** \brief Updates the cost of the children of this node if the cost up to this node has changed */
             void updateChildCosts(Motion *motion) const;
 
-            bool checkMotion(Motion *pmotion, Motion *motion, bool start);
+            // check 
+            bool isValid(const base::State *state);
 
-            bool checkMotionLazy(Motion *pmotion, Motion *motion, bool start);
+            // check
+            bool checkStartMotion(Motion *smotion, Motion *gmotion);
 
-            bool checkInterMotion(Motion *pmotion, Motion *motion, bool start);
+            bool checkGoalMotion(Motion *smotion, Motion *gmotion);
 
-            bool checkInterMotionLazy(Motion *pmotion, Motion *motion, bool start);
+            bool checkInterMotion(Motion *smotion, Motion *gmotion, bool start);
 
             void insertNeighbor(Motion *pmotion, Motion *motion);
 
@@ -570,9 +448,10 @@ namespace ompl
 
             bool removeFromVector(std::vector<Motion *> &motions, Motion *motion);
 
-            void setMotionInfinityCost(Motion *motion) const;
-
             void setMotionInfinityCostWithDisable(Motion *motion, std::unordered_set<Cell *> &cells) const;
+
+            /** \brief Free the memory allocated by this planner */
+            void freeMemory();
 
             void freeMotion(Motion *motion)
             {
@@ -599,17 +478,15 @@ namespace ompl
 
             std::vector<Motion *> pnullGoalMotions_;
 
+            std::vector<Motion *> checkedStartPath_;
+
+            std::vector<Motion *> checkedGoalPath_;
+
             /** \brief Stores the start states as Motions. */
             std::vector<Motion *> startMotions_;
 
             /** \brief A list of states in the tree that satisfy the goal condition */
             std::vector<Motion *> goalMotions_;
-
-            std::vector<Motion *> invalidStartMotions_;
-
-            std::vector<Motion *> invalidGoalMotions_;
-
-            std::size_t invalidStartNum_{0}, invalidGoalNum_{0};
 
             /** \brief The pair of motions in each tree connected during planning. */
             std::vector<std::pair<Motion *, Motion *>> connectionPoint_;
@@ -620,26 +497,9 @@ namespace ompl
 
             std::vector<double> maxDistanceV_, penDistanceV_;
 
-            double maxInvalidNodeRatio_{0.1};
-
-            /** \brief When extending a motion, the planner can decide
-                to keep the first valid part of it, even if invalid
-                states are found, as long as the valid part represents
-                a sufficiently large fraction from the original
-                motion */
-            double minValidPathFraction_{0.5};
-
-            bool lazyPath_{true};
-
-            bool lazyNode_{true};
-
-            bool addIntermediateState_{true};
-
-            bool rewire_{true};
+            bool backRewire_{true};
 
             bool rewireSort_{true};
-
-            bool symmetric_{true};
 
             /** \brief Objective we're optimizing */
             base::OptimizationObjectivePtr opt_;
@@ -732,92 +592,105 @@ namespace ompl
 
 
             ////////////////////////////////////////////////////////////////////////////////////////////////////
-            // safety certificate 
-            double distanceFunction(const base::SafetyCertificate *a, const base::SafetyCertificate *b) const
-            {
-                std::vector<double> cdist = distanceCertificate_(a->state, b->state);
-                double dist = std::accumulate(cdist.begin(), cdist.end(), 0.0);
-                return dist;
-            }
+            // adaptive informed sampling 
+            bool batchGrow(bool &startTree);
 
-            base::PlannerStatus prepareSolve(const base::PlannerTerminationCondition &ptc);
+            bool selectCMotion(std::size_t &index, bool &reverse);
 
-            /** feasible */
-            bool growTree(TreeGrowingInfo &tgi, Motion *rmotion, bool &otherSide, bool &change);
+            /** \brief Check if the connected path is valid */
+            bool isPathValid(Motion *motion, Motion *otherMotion);
 
-            bool growTreeSingleSpace(TreeGrowingInfo &tgi, Motion *rmotion, bool &otherSide, bool &change);
-
-            bool growTreeMultiSpace(TreeGrowingInfo &tgi, Motion *rmotion, bool &otherSide, bool &change);
-
-//            GrowState biasGrow(TreeData &tree, TreeGrowingInfo &tgi, Motion *&rmotion);
-
-            // check 
-            bool isValid(base::SafetyCertificate *sc);
-
-            bool isValid(const base::State *state);
-
-            // check
-            bool isValid(Motion *motion, bool start, bool add = false);
-
-            std::vector<Motion *> removeInvalidCertificate(SafetyCertificateWithElems *msce, const std::vector<double> &scd, bool start);
-
-            std::vector<Motion *> removeInvalidCertificateInter(SafetyCertificateWithElems *msce, const std::vector<double> &scd, bool start);
-
-            void removeInvalidCertificate(SafetyCertificateWithElems *msce, const std::vector<double> &scd, bool start,
-                    std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> &scQueue);
-
-            void removeInvalidCertificate(std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> &scQueue, bool start);
-
-            bool certificateOutside(const std::vector<double> &scd, const std::vector<double> &confidence) const;
-
-            /** \brief The metric space is symmetric */
-            bool checkInterMotion1(Motion *smotion, Motion *gmotion, bool start);
-
-            /** \brief The metric space is not symmetric */
-            bool checkInterMotion2(Motion *smotion, Motion *gmotion, bool start);
-
-            void addIntermediateMotion(Motion *pmotion, Motion *motion, bool start, Motion *last);
-
-            void addIntermediateMotionLazy(Motion *pmotion, bool start, Motion *last);
+            /** \brief Check from the root to the connect point, stop immediately if an invalid path is found  */
+            bool isPathValid(Motion *motion, bool start);
 
             /** \brief Check from the connect point to the root */
-            bool isStateValid(Motion *motion, bool start);
+            bool isPathValidInter(Motion *motion, bool start);
 
-            bool backPathRewireMotion(Motion *motion, bool start, Motion *&pmotion);
 
-            bool backPathRewireMotionLazy(Motion *motion, bool start, Motion *&pmotion);
+            ////////////////////////////////////////////////////////////////////////////////////////////////////
+            // adaptive informed
+            using NumPdf = PDF<std::size_t>;
+            using NumElem = NumPdf::Element;
+            
+            void processAdEllipsoidRind(bool clearoradd, bool &ais, unsigned int &adinfcount);
 
-            void removeFromSafetyCerficate(Motion *motion);
+            /** \brief Create the samplers */
+            base::AdInformedSamplerPtr allocInfSampler(const base::State *s1, const base::State *s2,
+                                                       const base::Cost &minCost, const base::Cost &maxCost);
 
-            /** \brief Free the memory allocated by this planner */
-            void freeMemory();
-
-            void freeCertificate(base::SafetyCertificate *sc)
+            void clearStartAdInfSampler() 
             {
-                if (sc->state)
-                    si_->freeState(sc->state);
-                if (sc->contact)
-                    delete sc->contact;
-                delete sc;
+                if (!startAdInfSamplers_.empty())
+                {
+                    for (auto & sampler : startAdInfSamplers_)
+                        sampler.reset();
+                    startAdInfSamplers_.clear();
+                    startAdInfPdf_.clear();
+                    startAdElems_.clear();
+                }
             }
 
-            std::vector<SafetyCertificateWithElems *> ssnne_, gsnne_;
+            void clearGoalAdInfSampler() 
+            {
+                if (!goalAdInfSamplers_.empty())
+                {
+                    for (auto & sampler : goalAdInfSamplers_)
+                        sampler.reset();
+                    goalAdInfSamplers_.clear();
+                    goalAdInfPdf_.clear();
+                    goalAdElems_.clear();
+                }
+            }
 
-            using SimpleGridSC = SimpleGrid<ompl::base::SafetyCertificate>;
-            using CellSC = SimpleGridSC::Cell;
-            using CoordSC = SimpleGridSC::Coord;
+            void localInfeasible(int &tree, bool &locals, bool &localg);
 
-            std::shared_ptr<SimpleGridSC> onn_;
+            void calculateInfSampler(bool local, bool start, bool &updated);
 
-            SafetyCertificateChecker safetyCertificateChecker_;
+            void startInfSampler(bool local, std::vector<base::AdInformedSamplerPtr> &infSamplers);
 
-            CollisionCertificateChecker collisionCertificateChecker_;
+            void startLocalInfSampler(std::vector<base::AdInformedSamplerPtr> &infSamplers);
 
-            DistanceCertificate distanceCertificate_;
+            void goalInfSampler(bool local, std::vector<base::AdInformedSamplerPtr> &infSamplers);
 
-            unsigned int certificateDim_{1u};
+            void goalLocalInfSampler(std::vector<base::AdInformedSamplerPtr> &infSamplers);
 
-            bool useCollisionCertificateChecker_{false};
+            void calculateInfProb(bool update);
+
+            void calculateInfProb(const std::vector<base::AdInformedSamplerPtr> &startInfSamplers, 
+                                  const std::vector<base::AdInformedSamplerPtr> &goalInfSamplers,
+                                  NumPdf &startInfPdf, NumPdf &goalInfPdf, 
+                                  std::vector<NumElem *> &startelems, std::vector<NumElem *> &goalelems, bool update);
+
+            bool sampleUniformAd(base::State *state, bool start);
+
+            virtual bool sampleUniform(base::State *state, const std::vector<base::AdInformedSamplerPtr> &infSamplers, const NumPdf &adInfPdf);
+
+            std::vector<base::AdInformedSamplerPtr> startAdInfSamplers_;
+
+            std::vector<base::AdInformedSamplerPtr> goalAdInfSamplers_;
+
+            NumPdf startAdInfPdf_;
+            std::vector<NumElem *> startAdElems_;
+
+            NumPdf goalAdInfPdf_;
+            std::vector<NumElem *> goalAdElems_;
+
+            double startAdInfProb_{0.0};
+
+            double localRatio_{0.75};
+
+            double factor_{1.1};
+
+            int tree_{-1};
+
+            /** \brief Option to use informed sampling */
+            bool useInformedSampling_{false};
+
+            /** \brief The status of the sample rejection parameter. */
+            bool useRejectionSampling_{false};
+
+            /** \brief The number of attempts to make at informed sampling */
+            unsigned int numSampleAttempts_{100u};
         };
     }
 }

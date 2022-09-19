@@ -91,6 +91,7 @@ namespace ompl
                 dists.resize(std::max(2u * (std::size_t)dists.rows() + 1u, data.size()), k);
             // first center is picked randomly
             centers.push_back(rng_.uniformInt(0, data.size() - 1));
+            bool add = true;
             for (unsigned i = 1; i < k; ++i)
             {
                 unsigned ind = 0;
@@ -109,10 +110,15 @@ namespace ompl
                 }
                 // no more centers available
                 if (maxDist < std::numeric_limits<double>::epsilon())
+                {
+                    add = false;
                     break;
+                }
                 centers.push_back(ind);
             }
 
+            if (!add)
+                return;
             const _T &center = data[centers.back()];
             unsigned i = centers.size() - 1;
             for (unsigned j = 0; j < data.size(); ++j)

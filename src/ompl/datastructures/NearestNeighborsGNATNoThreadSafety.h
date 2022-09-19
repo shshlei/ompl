@@ -194,6 +194,28 @@ namespace ompl
             return true;
         }
 
+        void removeBatch(const std::vector<_T> &datas) override
+        {
+            bool isPivot = false;
+            for (const _T& data : datas)
+            {
+                if (size_ == 0u)
+                    break;
+                // find data in tree
+                isPivot = (isPivot || nearestKInternal(data, 1));
+                const _T *d = nearQueue_.top().second;
+                nearQueue_.pop();
+                if (*d != data)
+                    continue;
+                removed_.insert(d);
+                size_--;
+            }
+            // if we removed a pivot or if the capacity of removed elements
+            // has been reached, we rebuild the entire GNAT
+            if (isPivot || removed_.size() >= removedCacheSize_)
+                rebuildDataStructure();
+        }
+
         _T nearest(const _T &data) const override
         {
             if (size_)

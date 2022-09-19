@@ -88,6 +88,11 @@ ompl::base::Cost ompl::base::OptimizationObjective::betterCost(Cost c1, Cost c2)
     return isCostBetterThan(c1, c2) ? c1 : c2;
 }
 
+ompl::base::Cost ompl::base::OptimizationObjective::motionCost(const State *s1, const State *s2, unsigned int /*sub*/) const
+{
+    return motionCost(s1, s2);
+}
+
 ompl::base::Cost ompl::base::OptimizationObjective::combineCosts(Cost c1, Cost c2) const
 {
     return Cost(c1.value() + c2.value());

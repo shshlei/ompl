@@ -159,6 +159,8 @@ namespace ompl
             /** \brief Get information about the exploration data structure the motion planner used. */
             void getPlannerData(base::PlannerData &pd) const;
 
+            void getPlannerData(base::PlannerData &pd, int sub) const;
+
             /** \brief Set the state validity checker to use */
             void setStateValidityChecker(const base::StateValidityCheckerPtr &svc)
             {

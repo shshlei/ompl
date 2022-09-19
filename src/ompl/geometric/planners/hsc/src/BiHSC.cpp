@@ -246,9 +246,6 @@ void ompl::geometric::BiHSC::clear()
     pnullStartMotions_.clear();
     pnullGoalMotions_.clear();
 
-    checkedStartPath_.clear();
-    checkedGoalPath_.clear();
-
     invalidStartMotions_.clear();
     invalidGoalMotions_.clear();
     invalidStartNum_ = invalidGoalNum_ = 0;
@@ -1548,10 +1545,6 @@ ompl::geometric::BiHSC::GrowState ompl::geometric::BiHSC::biasGrow(TreeData &tre
 bool ompl::geometric::BiHSC::isPathValid(Motion *motion, Motion *otherMotion, bool start)
 {
     bool valid = true;
-
-    checkedStartPath_.clear();
-    checkedGoalPath_.clear();
-
     if (start)
     {
         if (!isPathValid(motion, true))
@@ -1572,10 +1565,6 @@ bool ompl::geometric::BiHSC::isPathValid(Motion *motion, Motion *otherMotion, bo
 bool ompl::geometric::BiHSC::isPathValid(Motion *motion, Motion *otherMotion)
 {
     bool valid = true;
-
-    checkedStartPath_.clear();
-    checkedGoalPath_.clear();
-
     if (!isPathValid(motion, true))
         valid = false;
     if (!isPathValid(otherMotion, false))
@@ -1591,14 +1580,11 @@ bool ompl::geometric::BiHSC::isPathValid(Motion *motion, bool start)
         return false;
     bool tvalid = true;
     std::vector<Motion *> mpath;
-    std::vector<Motion *> &checkedPath = start ? checkedStartPath_ : checkedGoalPath_;
-    while (motion != nullptr)
+    while (motion->parent)
     {
-        checkedPath.push_back(motion);
         mpath.push_back(motion);
         motion = motion->parent;
     }
-    mpath.pop_back();
     std::vector<Motion *> &pnullMotions= start ? pnullStartMotions_: pnullGoalMotions_;
     std::vector<Motion *> &invalidMotions = start ? invalidStartMotions_ : invalidGoalMotions_;
     std::vector<Motion *> nullMotions;
@@ -1641,16 +1627,7 @@ bool ompl::geometric::BiHSC::isPathValid(Motion *motion, bool start)
             else 
                 pnullMotions.push_back(motion);
             if (tvalid)
-            {
                 enableMotionInDisc(motion);
-                checkedPath.resize(i+1);
-                Motion *last = motion->parent;
-                while (last != nullptr)
-                {
-                    checkedPath.push_back(last);
-                    last = last->parent;
-                }
-            }
             else 
                 break;
         }
@@ -1671,6 +1648,66 @@ bool ompl::geometric::BiHSC::isPathValid(Motion *motion, bool start)
 }
 
 bool ompl::geometric::BiHSC::isPathValidInter(Motion *motion, bool start)
+{
+    if (!isPathValidLazy(motion, start))
+        return false;
+    bool tvalid = true;
+    std::vector<Motion *> mpath;
+    while (motion->parent)
+    {
+        mpath.push_back(motion);
+        motion = motion->parent;
+    }
+    std::vector<Motion *> &pnullMotions= start ? pnullStartMotions_: pnullGoalMotions_;
+    std::vector<Motion *> &invalidMotions = start ? invalidStartMotions_ : invalidGoalMotions_;
+    std::vector<Motion *> nullMotions;
+    for (std::size_t i = mpath.size() - 1; i < mpath.size(); i--)
+    {
+        motion = mpath[i];
+        Motion *pmotion = motion->parent;
+        std::size_t spos = invalidMotions.size();
+        if (!checkMotion(pmotion, motion, start))
+        {
+            removeFromParent(motion);
+            motion->parent = nullptr;
+            tvalid = false;
+            if (rewire_)
+            {
+                std::size_t epos = invalidMotions.size();
+                for (std::size_t i = spos; i < epos; i++)
+                {
+                    Motion *temp = invalidMotions[i];
+                    for (auto & child : temp->children)
+                        child->pmotion = pmotion;
+                }
+                pnullMotions.push_back(motion);
+                motion->valid = ValidP;
+                motion->pmotion = pmotion;
+                nullMotions.push_back(motion);
+                motion->cell->data->root++;
+            }
+            else 
+                pnullMotions.push_back(motion);
+            break;
+        }
+    }
+    for (auto & nullm : nullMotions)
+    {
+        for (auto & child : nullm->children)
+        {
+            child->valid = UnCkeckedP;
+            child->parent = nullptr;
+            child->pmotion = nullm;
+            pnullMotions.push_back(child);
+            child->cell->data->root++;
+        }
+        nullm->children.clear();
+    }
+    return tvalid;
+}
+
+/*
+bool ompl::geometric::BiHSC::isPathValidInter(Motion *motion, bool start) // back rewire
 {
     if (!isPathValidLazy(motion, start))
         return false;
@@ -1742,6 +1779,7 @@ bool ompl::geometric::BiHSC::isPathValidInter(Motion *motion, bool start)
     }
     return tvalid;
 }
+*/
 
 bool ompl::geometric::BiHSC::isPathValidLazy(Motion *motion, bool start)
 {

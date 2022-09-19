@@ -189,9 +189,6 @@ void ompl::geometric::BiHSCCell::clear()
     pnullStartMotions_.clear();
     pnullGoalMotions_.clear();
 
-    checkedStartPath_.clear();
-    checkedGoalPath_.clear();
-
     invalidStartMotions_.clear();
     invalidGoalMotions_.clear();
 
@@ -944,10 +941,6 @@ double ompl::geometric::BiHSCCell::penetrationDistance(const base::State *nstate
 bool ompl::geometric::BiHSCCell::isPathValid(Motion *motion, Motion *otherMotion, bool start)
 {
     bool valid = true;
-
-    checkedStartPath_.clear();
-    checkedGoalPath_.clear();
-
     if (start)
     {
         if (!isPathValid(motion, true))
@@ -968,10 +961,6 @@ bool ompl::geometric::BiHSCCell::isPathValid(Motion *motion, Motion *otherMotion
 bool ompl::geometric::BiHSCCell::isPathValid(Motion *motion, Motion *otherMotion)
 {
     bool valid = true;
-
-    checkedStartPath_.clear();
-    checkedGoalPath_.clear();
-
     if (!isPathValid(motion, true))
         valid = false;
     if (!isPathValid(otherMotion, false))
@@ -987,14 +976,11 @@ bool ompl::geometric::BiHSCCell::isPathValid(Motion *motion, bool start)
         return false;
     bool tvalid = true;
     std::vector<Motion *> mpath;
-    std::vector<Motion *> &checkedPath = start ? checkedStartPath_ : checkedGoalPath_;
-    while (motion != nullptr)
+    while (motion->parent)
     {
-        checkedPath.push_back(motion);
         mpath.push_back(motion);
         motion = motion->parent;
     }
-    mpath.pop_back();
     std::vector<Motion *> &pnullMotions= start ? pnullStartMotions_: pnullGoalMotions_;
     CellDiscretizationData &disc = start ? dStart_ : dGoal_;
     std::vector<Motion *> nullMotions;
@@ -1026,16 +1012,7 @@ bool ompl::geometric::BiHSCCell::isPathValid(Motion *motion, bool start)
             else 
                 pnullMotions.push_back(motion);
             if (tvalid)
-            {
                 enableMotionInDisc(disc, motion);
-                checkedPath.resize(i+1);
-                Motion *last = motion->parent;
-                while (last != nullptr)
-                {
-                    checkedPath.push_back(last);
-                    last = last->parent;
-                }
-            }
             else
                 break;
         }

@@ -86,6 +86,12 @@ namespace ompl
         /** \brief Remove an element from the datastructure */
         virtual bool remove(const _T &data) = 0;
 
+        virtual void removeBatch(const std::vector<_T> &datas)
+        {
+            for (const _T& data : datas)
+                remove(data);
+        }
+
         /** \brief Get the nearest neighbor of a point */
         virtual _T nearest(const _T &data) const = 0;
 

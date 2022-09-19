@@ -315,6 +315,8 @@ namespace ompl
                 (without calling clear() in between).  */
             virtual void getPlannerData(PlannerData &data) const;
 
+            virtual void getPlannerData(PlannerData &data, int sub) const;
+
             /** \brief Get the name of the planner */
             const std::string &getName() const;
 

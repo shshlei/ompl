@@ -111,6 +111,14 @@ namespace ompl
         void setNeighborCell(int n)
         {
             neighborCell_ = n;
+            if (maxneighborCell_ < 0)
+                maxneighborCell_ = 2 * n;
+        }
+
+        /// Store the neighbors of a cell in (2*n - 1) grid 
+        void setMaxNeighborCell(int n)
+        {
+            maxneighborCell_ = n;
         }
 
         /// If bounds for the grid need to be considered, we can set them here.
@@ -394,6 +402,8 @@ namespace ompl
             if (cell1 == cell2)
                 return;
             std::size_t n = (std::size_t)((cell1->coord - cell2->coord).template lpNorm<Eigen::Infinity>() + 1);
+            if (n > (std::size_t)maxneighborCell_)
+                return;
             if (n > cell1->nbh.size())
                 cell1->nbh.resize(n);
             if (n > cell2->nbh.size())
@@ -459,6 +469,8 @@ namespace ompl
         unsigned int removed_{0};
 
         int neighborCell_{-1};
+
+        int maxneighborCell_{-1};
 
         /// Flag indicating whether the neighbor count used to determine whether
         /// a cell is on the border or not

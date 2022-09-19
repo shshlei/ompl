@@ -88,6 +88,15 @@ namespace ompl
             return result;
         }
 
+        void removeBatch(const std::vector<_T> &datas) override
+        {
+            bool result = false;
+            for (const _T& data : datas)
+                result = (result || NearestNeighborsLinear<_T>::remove(data));
+            if (result)
+                updateCheckCount();
+        }
+
         _T nearest(const _T &data) const override
         {
             const std::size_t n = NearestNeighborsLinear<_T>::data_.size();

@@ -1002,7 +1002,7 @@ bool ompl::geometric::BiHSCCellstar::isPathValid(Motion *motion, Motion *otherMo
     return valid;
 }
 
-bool ompl::geometric::BiHSCCellstar::isPathValid(Motion *motion, bool start)
+bool ompl::geometric::BiHSCCellstar::isPathValid(Motion *motion, bool start) // todo
 {
     if (!lazyPath_)
         return true;
@@ -1032,6 +1032,13 @@ bool ompl::geometric::BiHSCCellstar::isPathValid(Motion *motion, bool start)
             Motion *pmotion = nullptr;
             if (backPathRewireMotion(motion, start, pmotion))
             {
+                checkedPath.resize(i+1);
+                Motion *last = pmotion;
+                while (last)
+                {
+                    checkedPath.push_back(last);
+                    last = last->parent;
+                }
                 tvalid = isPathValidInter(pmotion, start);
                 connectToPmotion(motion, pmotion, start);
                 motion->parent->children.push_back(motion); 
@@ -1044,16 +1051,7 @@ bool ompl::geometric::BiHSCCellstar::isPathValid(Motion *motion, bool start)
                 motion->cell->auxData->root++;
             }
             if (tvalid)
-            {
                 enableMotionInDisc(disc, motion);
-                checkedPath.resize(i+1);
-                Motion *last = motion->parent;
-                while (last != nullptr)
-                {
-                    checkedPath.push_back(last);
-                    last = last->parent;
-                }
-            }
             else
                 break;
         }
@@ -1072,7 +1070,7 @@ bool ompl::geometric::BiHSCCellstar::isPathValid(Motion *motion, bool start)
     return tvalid;
 }
 
-bool ompl::geometric::BiHSCCellstar::isStateValid(Motion *motion, bool start)
+bool ompl::geometric::BiHSCCellstar::isStateValid(Motion *motion, bool start) // todo
 {
     if (!lazyNode_)
         return true;
@@ -1142,7 +1140,40 @@ bool ompl::geometric::BiHSCCellstar::isStateValid(Motion *motion, bool start)
     return tvalid;
 }
 
-bool ompl::geometric::BiHSCCellstar::isPathValidInter(Motion *motion, bool start)
+bool ompl::geometric::BiHSCCellstar::isPathValidInter(Motion *motion, bool start) // todo
+{
+    if (lazyNode_ && !isStateValid(motion, start))
+        return false;
+    bool tvalid = true;
+    std::vector<Motion *> &pnullMotions= start ? pnullStartMotions_: pnullGoalMotions_;
+    while (motion->parent)
+    {
+        if (start ? !checkStartMotion(motion->parent, motion) : !checkGoalMotion(motion, motion->parent))
+        {
+            removeFromParent(motion);
+            motion->parent = nullptr;
+            tvalid = false;
+
+            pnullMotions.push_back(motion);
+            motion->valid = true;
+            motion->cell->auxData->root++;
+            for (auto & child : motion->children)
+            {
+                child->valid = false;
+                child->parent = nullptr;
+                pnullMotions.push_back(child);
+                child->cell->auxData->root++;
+            }
+            motion->children.clear();
+            break;
+        }
+        motion = motion->parent;
+    }
+    return tvalid;
+}
+
+/*
+bool ompl::geometric::BiHSCCellstar::isPathValidInter(Motion *motion, bool start) // back rewire
 {
     if (lazyNode_ && !isStateValid(motion, start))
         return false;
@@ -1185,6 +1216,7 @@ bool ompl::geometric::BiHSCCellstar::isPathValidInter(Motion *motion, bool start
     }
     return tvalid;
 }
+*/
 
 void ompl::geometric::BiHSCCellstar::removeInvalidMotions()
 {

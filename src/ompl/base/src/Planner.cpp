@@ -132,6 +132,11 @@ void ompl::base::Planner::getPlannerData(PlannerData &data) const
         data.properties[plannerProgressProperty.first] = plannerProgressProperty.second();
 }
 
+void ompl::base::Planner::getPlannerData(PlannerData &data, int /*sub*/) const
+{
+    getPlannerData(data);
+}
+
 ompl::base::PlannerStatus ompl::base::Planner::solve(const PlannerTerminationConditionFn &ptc, double checkInterval)
 {
     return solve(PlannerTerminationCondition(ptc, checkInterval));

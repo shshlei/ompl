@@ -1548,6 +1548,13 @@ bool ompl::geometric::BiHSCstar::isPathValid(Motion *motion, bool start)
                 base::Cost nbhNewCost = opt_->combineCosts(ppmotion->cost, nbhIncCost);
                 currentCost = opt_->combineCosts(currentCost, base::Cost(nbhNewCost.value() - cost.value()));
                 base::Cost temp = opt_->combineCosts(currentStartCost_, currentGoalCost_);
+                checkedPath.resize(i+1);
+                Motion *last = ppmotion;
+                while (last)
+                {
+                    checkedPath.push_back(last);
+                    last = last->parent;
+                }
                 if (!opt_->isCostBetterThan(temp, bestCost_))
                     stop = true;
                 else 
@@ -1565,16 +1572,7 @@ bool ompl::geometric::BiHSCstar::isPathValid(Motion *motion, bool start)
                 motion->cell->data->root++;
             }
             if (tvalid)
-            {
                 enableMotionInDisc(motion);
-                checkedPath.resize(i+1);
-                Motion *last = motion->parent;
-                while (last != nullptr)
-                {
-                    checkedPath.push_back(last);
-                    last = last->parent;
-                }
-            }
             else 
                 break;
             if (stop)
@@ -2926,6 +2924,7 @@ std::size_t ompl::geometric::BiHSCstar::pruneTreeInternalDisabled(TreeData &tree
             if (!leavesToPrune.front()->parent)
             {
                 invalid = true;
+                removeFromVector(leavesToPrune.front()->pmotion->pchildren, leavesToPrune.front());
                 leavesToPrune.front()->cell->data->root--;
             }
             leavesToPrune.front()->cell->data->disabled--;

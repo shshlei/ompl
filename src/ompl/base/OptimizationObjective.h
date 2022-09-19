@@ -115,6 +115,8 @@ namespace ompl
             /** \brief Get the cost that corresponds to the motion segment between \e s1 and \e s2 */
             virtual Cost motionCost(const State *s1, const State *s2) const = 0;
 
+            virtual Cost motionCost(const State *s1, const State *s2, unsigned int sub) const;
+
             /** \brief Get the cost that corresponds to combining the costs \e c1 and \e c2. Default implementation
              * defines this combination as an addition. */
             virtual Cost combineCosts(Cost c1, Cost c2) const;

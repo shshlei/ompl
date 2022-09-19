@@ -174,6 +174,29 @@ namespace ompl
             }
             return false;
         }
+        /*
+        void removeBatch(const std::vector<_T> &datas) override
+        {
+            bool result = false;
+            for (const _T& data : datas)
+            {
+                if (!index_)
+                    break;
+                auto &elt = const_cast<_T &>(data);
+                const flann::Matrix<_T> query(&elt, 1, dimension_);
+                std::vector<std::vector<size_t>> indices(1);
+                std::vector<std::vector<double>> dists(1);
+                index_->knnSearch(query, indices, dists, 1, searchParams_);
+                if (*index_->getPoint(indices[0][0]) == data)
+                {
+                    index_->removePoint(indices[0][0]);
+                    result = true;
+                }
+            }
+            if (result)
+                rebuildIndex();
+        }
+        */
         _T nearest(const _T &data) const override
         {
             if (size())

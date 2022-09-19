@@ -575,10 +575,6 @@ namespace ompl
 
             std::vector<Motion *> pnullGoalMotions_;
 
-            std::vector<Motion *> checkedStartPath_;
-
-            std::vector<Motion *> checkedGoalPath_;
-
             /** \brief Stores the start states as Motions. */
             std::vector<Motion *> startMotions_;
 
