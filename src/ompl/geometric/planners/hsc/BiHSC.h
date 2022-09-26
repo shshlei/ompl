@@ -149,23 +149,6 @@ namespace ompl
                 return addIntermediateState_;
             }
 
-            /** \brief When extending a motion, the planner can decide
-                to keep the first valid part of it, even if invalid
-                states are found, as long as the valid part represents
-                a sufficiently large fraction from the original
-                motion. This function sets the minimum acceptable
-                fraction. */
-            void setMinValidPathFraction(double fraction)
-            {
-                minValidPathFraction_ = fraction;
-            }
-
-            /** \brief Get the value of the fraction set by setMinValidPathFraction() */
-            double getMinValidPathFraction() const
-            {
-                return minValidPathFraction_;
-            }
-
             void setUseBispace(bool bispace)
             {
                 if (!bispace)
@@ -298,9 +281,6 @@ namespace ompl
 
                 /** \brief The disabled motion number in this cell */
                 std::size_t disabled{0};
-
-                /** \brief The root motion number in this cell */
-                std::size_t root{0};
             };
 
             using CellDiscretizationData = GridN<CellData *>;
@@ -357,7 +337,7 @@ namespace ompl
                 /** \brief Order function */
                 bool operator()(const Cell *const a, const Cell *const b) const
                 {
-                    return 100 * a->data->root + a->data->disabled < 100 * b->data->root + b->data->disabled;
+                    return a->data->disabled < b->data->disabled;
                 }
             };
 
@@ -622,13 +602,6 @@ namespace ompl
 
             double maxInvalidNodeRatio_{0.1};
 
-            /** \brief When extending a motion, the planner can decide
-                to keep the first valid part of it, even if invalid
-                states are found, as long as the valid part represents
-                a sufficiently large fraction from the original
-                motion */
-            double minValidPathFraction_{0.5};
-
             bool lazyPath_{true};
 
             bool lazyNode_{true};
@@ -757,7 +730,7 @@ namespace ompl
             bool isValid(const base::State *state);
 
             // check
-            bool isValid(Motion *motion, bool start, bool add = false);
+            bool isValid(Motion *motion, bool start);
 
             std::vector<Motion *> removeInvalidCertificate(SafetyCertificateWithElems *msce, const std::vector<double> &scd, bool start);
 

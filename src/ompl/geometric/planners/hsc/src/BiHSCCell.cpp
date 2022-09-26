@@ -216,7 +216,7 @@ ompl::base::PlannerStatus ompl::geometric::BiHSCCell::solve(const base::PlannerT
     bool solved = false;
     Motion *bestStartMotion = nullptr;
     Motion *bestGoalMotion = nullptr;
-    while (!ptc && !solved)
+    while (!ptc)
     {
         if (pis_.getSampledGoalsCount() < dGoal_.getMotionCount() / 2)
         {
@@ -281,6 +281,8 @@ ompl::base::PlannerStatus ompl::geometric::BiHSCCell::solve(const base::PlannerT
             }
         }
 
+        if (solved)
+            break;
         if (!rewire_)
             removeInvalidMotionsDirectly();
         else if (lazyNode_)

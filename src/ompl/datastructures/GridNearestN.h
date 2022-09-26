@@ -38,6 +38,7 @@
 #define OMPL_DATASTRUCTURES_GRIDNEAREST_N_
 
 #include "ompl/datastructures/GridNearest.h"
+#include <omplapp/config.h>
 
 namespace ompl
 {

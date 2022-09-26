@@ -52,7 +52,6 @@ ompl::geometric::BiHSCstar::BiHSCstar(const base::SpaceInformationPtr &si) : bas
     Planner::declareParam<double>("pen_distance", this, &BiHSCstar::setPenDistance, &BiHSCstar::getPenDistance, "0.:0.1:10000.");
     Planner::declareParam<bool>("lazy_path", this, &BiHSCstar::setLazyPath, &BiHSCstar::getLazyPath, "0,1");
     Planner::declareParam<bool>("lazy_node", this, &BiHSCstar::setLazyNode, &BiHSCstar::getLazyNode, "0,1");
-    Planner::declareParam<bool>("add_intermediate_state", this, &BiHSCstar::setAddIntermediateState, &BiHSCstar::getAddIntermediateState, "0,1");
     Planner::declareParam<bool>("use_bispace", this, &BiHSCstar::setUseBispace, &BiHSCstar::getUseBispace, "0,1");
 //    Planner::declareParam<bool>("use_biasgrow", this, &BiHSCstar::setUseBiasGrow, &BiHSCstar::getUseBiasGrow, "0,1");
 //    Planner::declareParam<bool>("treated_as_multi_subapce", this, &BiHSCstar::setTreatedAsMultiSubapce, &BiHSCstar::getTreatedAsMultiSubapce, "0,1");
@@ -62,8 +61,6 @@ ompl::geometric::BiHSCstar::BiHSCstar(const base::SpaceInformationPtr &si) : bas
 
     addPlannerProgressProperty("iterations INTEGER", [this] { return numIterationsProperty(); });
     addPlannerProgressProperty("best cost REAL", [this] { return bestCostProperty(); });
-
-    addPlannerProgressProperty("collision check time REAL", [this] { return collisionCheckTimeProperty(); });
 }
 
 ompl::geometric::BiHSCstar::~BiHSCstar()
@@ -95,9 +92,6 @@ void ompl::geometric::BiHSCstar::setup()
         sc.configurePlannerRange(maxDistance_);
         sc.configurePenetrationDistance(penDistance_);
     }
-
-    if (minValidPathFraction_ < std::numeric_limits<double>::epsilon() || minValidPathFraction_ > 1.0)
-        throw Exception("The minimum valid path fraction must be in the range (0,1]");
 
     sc.configureProjectionEvaluator(projectionEvaluator_);
     dStart_.setDimension(projectionEvaluator_->getDimension());
@@ -279,7 +273,6 @@ void ompl::geometric::BiHSCstar::clear()
     iterations_ = 0;
     prunedCost_ = base::Cost(std::numeric_limits<double>::quiet_NaN());
 
-    oTime_ = 0.0;
     if (onn_)
     {
         onn_->clear();
@@ -730,7 +723,6 @@ bool ompl::geometric::BiHSCstar::growTreeSingleSpace(TreeGrowingInfo &tgi, Motio
         bool lazy = false;
         bool cvalid = true;
         std::vector<double> cdist;
-        time::point starto = time::now();
         if (useCollisionCertificateChecker_)
         {
             CoordSC xcoord(projectionEvaluator_->getDimension());
@@ -755,7 +747,6 @@ bool ompl::geometric::BiHSCstar::growTreeSingleSpace(TreeGrowingInfo &tgi, Motio
             else if (!isValid(sc))
                 cvalid = false;
         }
-        oTime_ += time::seconds(time::now() - starto);
         if (!cvalid)
         {
             reach = false;
@@ -1027,7 +1018,6 @@ bool ompl::geometric::BiHSCstar::growTreeMultiSpace(TreeGrowingInfo &tgi, Motion
         bool lazy = false;
         bool cvalid = true;
         std::vector<double> cdist;
-        time::point starto = time::now();
         if (useCollisionCertificateChecker_)
         {
             CoordSC xcoord(projectionEvaluator_->getDimension());
@@ -1052,7 +1042,6 @@ bool ompl::geometric::BiHSCstar::growTreeMultiSpace(TreeGrowingInfo &tgi, Motion
             else if (!isValid(sc))
                 cvalid = false;
         }
-        oTime_ += time::seconds(time::now() - starto);
         if (!cvalid)
         {
             reach = false;
@@ -1517,7 +1506,6 @@ bool ompl::geometric::BiHSCstar::isPathValid(Motion *motion, bool start)
     base::Cost &currentCost = start ? currentStartCost_ : currentGoalCost_;
     std::vector<Motion *> &pnullMotions= start ? pnullStartMotions_: pnullGoalMotions_;
     std::vector<Motion *> &invalidMotions = start ? invalidStartMotions_ : invalidGoalMotions_;
-    std::vector<Motion *> nullMotions;
     for (std::size_t i = mpath.size() - 1; i < mpath.size(); i--)
     {
         motion = mpath[i];
@@ -1565,11 +1553,9 @@ bool ompl::geometric::BiHSCstar::isPathValid(Motion *motion, bool start)
             else 
             {
                 pnullMotions.push_back(motion);
-                motion->valid = ValidP;
+                motion->valid = UnCkeckedP;
                 motion->pmotion = pmotion;
                 motion->pmotion->pchildren.push_back(motion);
-                nullMotions.push_back(motion);
-                motion->cell->data->root++;
             }
             if (tvalid)
                 enableMotionInDisc(motion);
@@ -1581,19 +1567,6 @@ bool ompl::geometric::BiHSCstar::isPathValid(Motion *motion, bool start)
                 break;
             }
         }
-    }
-    for (auto & nullm : nullMotions)
-    {
-        for (auto & child : nullm->children)
-        {
-            child->valid = UnCkeckedP;
-            child->parent = nullptr;
-            child->pmotion = nullm;
-            child->pmotion->pchildren.push_back(child);
-            pnullMotions.push_back(child);
-            child->cell->data->root++;
-        }
-        nullm->children.clear();
     }
     return tvalid;
 }
@@ -1613,7 +1586,6 @@ bool ompl::geometric::BiHSCstar::isPathValidInter(Motion *motion, bool start, bo
     }
     std::vector<Motion *> &pnullMotions= start ? pnullStartMotions_: pnullGoalMotions_;
     std::vector<Motion *> &invalidMotions = start ? invalidStartMotions_ : invalidGoalMotions_;
-    std::vector<Motion *> nullMotions;
     for (std::size_t i = mpath.size() - 1; i < mpath.size(); i--)
     {
         motion = mpath[i];
@@ -1636,26 +1608,11 @@ bool ompl::geometric::BiHSCstar::isPathValidInter(Motion *motion, bool start, bo
             }
 
             pnullMotions.push_back(motion);
-            motion->valid = ValidP;
+            motion->valid = UnCkeckedP;
             motion->pmotion = pmotion;
             motion->pmotion->pchildren.push_back(motion);
-            nullMotions.push_back(motion);
-            motion->cell->data->root++;
             break;
         }
-    }
-    for (auto & nullm : nullMotions)
-    {
-        for (auto & child : nullm->children)
-        {
-            child->valid = UnCkeckedP;
-            child->parent = nullptr;
-            child->pmotion = nullm;
-            child->pmotion->pchildren.push_back(child);
-            pnullMotions.push_back(child);
-            child->cell->data->root++;
-        }
-        nullm->children.clear();
     }
     return tvalid;
 }
@@ -1677,7 +1634,6 @@ bool ompl::geometric::BiHSCstar::isPathValidInter(Motion *motion, bool start, bo
     base::Cost &currentCost = start ? currentStartCost_ : currentGoalCost_;
     std::vector<Motion *> &pnullMotions= start ? pnullStartMotions_: pnullGoalMotions_;
     std::vector<Motion *> &invalidMotions = start ? invalidStartMotions_ : invalidGoalMotions_;
-    std::vector<Motion *> nullMotions;
     for (std::size_t i = mpath.size() - 1; i < mpath.size(); i--)
     {
         motion = mpath[i];
@@ -1717,11 +1673,9 @@ bool ompl::geometric::BiHSCstar::isPathValidInter(Motion *motion, bool start, bo
             else 
             {
                 pnullMotions.push_back(motion);
-                motion->valid = ValidP;
+                motion->valid = UnckeckedP;
                 motion->pmotion = pmotion;
                 motion->pmotion->pchildren.push_back(motion);
-                nullMotions.push_back(motion);
-                motion->cell->data->root++;
             }
             if (tvalid)
                 enableMotionInDisc(motion);
@@ -1730,19 +1684,6 @@ bool ompl::geometric::BiHSCstar::isPathValidInter(Motion *motion, bool start, bo
             if (stop)
                 break;
         }
-    }
-    for (auto & nullm : nullMotions)
-    {
-        for (auto & child : nullm->children)
-        {
-            child->valid = UnCkeckedP;
-            child->parent = nullptr;
-            child->pmotion = nullm;
-            child->pmotion->pchildren.push_back(child);
-            pnullMotions.push_back(child);
-            child->cell->data->root++;
-        }
-        nullm->children.clear();
     }
     return tvalid;
 }
@@ -1819,7 +1760,6 @@ bool ompl::geometric::BiHSCstar::isPathValidLazy(Motion *motion, bool start, boo
         return false;
     if (stop)
         return true;
-    /*
     bool tvalid = true;
     std::vector<Motion *> mpath;
     while (motion->parent)
@@ -1830,7 +1770,6 @@ bool ompl::geometric::BiHSCstar::isPathValidLazy(Motion *motion, bool start, boo
     base::Cost &currentCost = start ? currentStartCost_ : currentGoalCost_;
     std::vector<Motion *> &pnullMotions= start ? pnullStartMotions_: pnullGoalMotions_;
     std::vector<Motion *> &invalidMotions = start ? invalidStartMotions_ : invalidGoalMotions_;
-    std::vector<Motion *> nullMotions;
     for (std::size_t i = mpath.size() - 1; i < mpath.size(); i--)
     {
         motion = mpath[i];
@@ -1876,11 +1815,9 @@ bool ompl::geometric::BiHSCstar::isPathValidLazy(Motion *motion, bool start, boo
             else 
             {
                 pnullMotions.push_back(motion);
-                motion->valid = ValidP;
+                motion->valid = UnCkeckedP;
                 motion->pmotion = pmotion;
                 motion->pmotion->pchildren.push_back(motion);
-                nullMotions.push_back(motion);
-                motion->cell->data->root++;
             }
             if (tvalid)
                 enableMotionInDisc(motion);
@@ -1890,22 +1827,7 @@ bool ompl::geometric::BiHSCstar::isPathValidLazy(Motion *motion, bool start, boo
                 break;
         }
     }
-    for (auto & nullm : nullMotions)
-    {
-        for (auto & child : nullm->children)
-        {
-            child->valid = UnCkeckedP;
-            child->parent = nullptr;
-            child->pmotion = nullm;
-            child->pmotion->pchildren.push_back(child);
-            pnullMotions.push_back(child);
-            child->cell->data->root++;
-        }
-        nullm->children.clear();
-    }
     return tvalid;
-    */
-    return true;
 }
 
 void ompl::geometric::BiHSCstar::removeInvalidMotions()
@@ -1931,7 +1853,6 @@ void ompl::geometric::BiHSCstar::removeInvalidMotions()
         {
             child->parent = nullptr;
             pnullStartMotions_.push_back(child);
-            child->cell->data->root++;
         }
         pnull->children.clear();
     }
@@ -1944,7 +1865,6 @@ void ompl::geometric::BiHSCstar::removeInvalidMotions()
         {
             child->parent = nullptr;
             pnullGoalMotions_.push_back(child);
-            child->cell->data->root++;
         }
         pnull->children.clear();
     }
@@ -2163,7 +2083,6 @@ void ompl::geometric::BiHSCstar::removeFromPnull(std::vector<Motion *> &pnullMot
     {
         removeFromVector(motion->pmotion->pchildren, motion);
         motion->pmotion = nullptr;
-        motion->cell->data->root--;
     }
 }
 
@@ -2526,60 +2445,85 @@ void ompl::geometric::BiHSCstar::rewirePath()
         bool updated = false;
         std::vector<Motion *> &checkedPath = checkedStartPath_;
         std::size_t i = checkedPath.size() - 1, j = i - 2, k = 0;
-        while (i < checkedPath.size() && checkedPath[i]->valid && opt_->isFinite(checkedPath[i]->cost))
+        if (j < checkedPath.size() && checkedPath[j]->valid && checkedPath[j + 1]->valid)
         {
-            j = i - 2;
-            while (j < checkedPath.size() && checkedPath[j]->valid && opt_->isFinite(checkedPath[j]->cost))
+            while (i < checkedPath.size())
             {
-                if (isInvalidNeighbor(checkedPath[i], checkedPath[j]))
+                j = i - 2;
+                while (j < checkedPath.size() && checkedPath[j]->valid && opt_->isFinite(checkedPath[j]->cost))
+                {
+                    if (isInvalidNeighbor(checkedPath[i], checkedPath[j]))
+                        break;
+                    updated = true;
+                    k = j;
+                    j--;
+                }
+                if (updated)
                     break;
-                updated = true;
-                k = j;
-                j--;
+                i--;
             }
-            if (updated)
-                break;
-            i--;
+
         }
         if (updated)
         {
-            removeFromParent(checkedPath[k]);
-            connectToPmotion(checkedPath[k], checkedPath[i], true);
-            checkedPath[k]->parent->children.push_back(checkedPath[k]);
-            if (isValidNeighbor(checkedPath[k], checkedPath[i]))
-                checkedPath[k]->valid = ValidP;
-            else
-                checkedPath[k]->valid = UnCkeckedP;
+            base::Cost incCost = opt_->motionCost(checkedPath[i]->state, checkedPath[k]->state);
+            base::Cost cost = opt_->combineCosts(checkedPath[i]->cost, incCost);
+            if (1.05 * cost.value() < checkedPath[k]->cost.value())
+            {
+                removeFromParent(checkedPath[k]);
+                checkedPath[k]->parent = checkedPath[i];
+                checkedPath[k]->incCost = incCost;
+                checkedPath[k]->cost = cost;
+                checkedPath[k]->root = checkedPath[i]->root;
+                updateChildCosts(checkedPath[k]);
+                checkedPath[k]->parent->children.push_back(checkedPath[k]);
+                if (isValidNeighbor(checkedPath[k], checkedPath[i]))
+                    checkedPath[k]->valid = ValidP;
+                else
+                    checkedPath[k]->valid = UnCkeckedP;
+            }
         }
     }
     {
         bool updated = false;
         std::vector<Motion *> &checkedPath = checkedGoalPath_;
         std::size_t i = checkedPath.size() - 1, j = i - 2, k = 0;
-        while (i < checkedPath.size() && checkedPath[i]->valid && opt_->isFinite(checkedPath[i]->cost))
+        if (j < checkedPath.size() && checkedPath[j]->valid && checkedPath[j + 1]->valid)
         {
-            j = i - 2;
-            while (j < checkedPath.size() && checkedPath[j]->valid && opt_->isFinite(checkedPath[j]->cost))
+            while (i < checkedPath.size())
             {
-                if (isInvalidNeighbor(checkedPath[i], checkedPath[j]))
+                j = i - 2;
+                while (j < checkedPath.size() && checkedPath[j]->valid && opt_->isFinite(checkedPath[j]->cost))
+                {
+                    if (isInvalidNeighbor(checkedPath[i], checkedPath[j]))
+                        break;
+                    updated = true;
+                    k = j;
+                    j--;
+                }
+                if (updated)
                     break;
-                updated = true;
-                k = j;
-                j--;
+                i--;
             }
-            if (updated)
-                break;
-            i--;
         }
         if (updated)
         {
-            removeFromParent(checkedPath[k]);
-            connectToPmotion(checkedPath[k], checkedPath[i], false);
-            checkedPath[k]->parent->children.push_back(checkedPath[k]);
-            if (isValidNeighbor(checkedPath[k], checkedPath[i]))
-                checkedPath[k]->valid = ValidP;
-            else 
-                checkedPath[k]->valid = UnCkeckedP;
+            base::Cost incCost = opt_->motionCost(checkedPath[k]->state, checkedPath[i]->state);
+            base::Cost cost = opt_->combineCosts(checkedPath[i]->cost, incCost);
+            if (1.05 * cost.value() < checkedPath[k]->cost.value())
+            {
+                removeFromParent(checkedPath[k]);
+                checkedPath[k]->parent = checkedPath[i];
+                checkedPath[k]->incCost = incCost;
+                checkedPath[k]->cost = cost;
+                checkedPath[k]->root = checkedPath[i]->root;
+                updateChildCosts(checkedPath[k]);
+                checkedPath[k]->parent->children.push_back(checkedPath[k]);
+                if (isValidNeighbor(checkedPath[k], checkedPath[i]))
+                    checkedPath[k]->valid = ValidP;
+                else 
+                    checkedPath[k]->valid = UnCkeckedP;
+            }
         }
     }
 }
@@ -2759,32 +2703,34 @@ bool ompl::geometric::BiHSCstar::backRewire(Motion *motion, Motion *nb, bool sta
         valid = true;
         pmotion = motion;
     }
-
     if (!feas)
         return valid;
-
     Motion *temp = nullptr;
     while (motion->valid && motion->parent)
     {
         if (isInvalidNeighbor(motion->parent, nb))
             break;
-        nbhIncCost = start ? opt_->motionCost(motion->parent->state, nb->state) : opt_->motionCost(nb->state, motion->parent->state);
-        nbhNewCost = opt_->combineCosts(motion->parent->cost, nbhIncCost);
-        if (opt_->isCostBetterThan(nbhNewCost, nb->cost))
-            temp = motion->parent;
+        base::Cost incCost = start ? opt_->motionCost(motion->parent->state, nb->state) : opt_->motionCost(nb->state, motion->parent->state);
+        if (1.05 * incCost.value() < opt_->combineCosts(motion->incCost, nbhIncCost).value())
+            break;
+        base::Cost cost = opt_->combineCosts(motion->parent->cost, incCost);
+        if (!opt_->isCostBetterThan(cost, nb->cost))
+            break;
+        temp = motion->parent;
+        nbhIncCost = incCost;
+        nbhNewCost = cost;
         motion = motion->parent;
     }
-
     if (temp)
     {
         valid = true;
         pmotion = temp;
         feas = isValidNeighbor(temp, nb);
     }
-
     return valid;
 }
 
+// optimal prune tree
 std::size_t ompl::geometric::BiHSCstar::pruneTree(const base::Cost &pruneTreeCost)
 {
     double fracBetter;
@@ -2925,7 +2871,6 @@ std::size_t ompl::geometric::BiHSCstar::pruneTreeInternalDisabled(TreeData &tree
             {
                 invalid = true;
                 removeFromVector(leavesToPrune.front()->pmotion->pchildren, leavesToPrune.front());
-                leavesToPrune.front()->cell->data->root--;
             }
             leavesToPrune.front()->cell->data->disabled--;
             pruneMotionDisabled(leavesToPrune.front(), disc, start);
@@ -3269,7 +3214,6 @@ bool ompl::geometric::BiHSCstar::isValid(base::SafetyCertificate *sc)
 
 bool ompl::geometric::BiHSCstar::isValid(const base::State *state)
 {
-    time::point starto = time::now();
     base::SafetyCertificate *sc = new base::SafetyCertificate(si_, certificateDim_);
     si_->copyState(sc->state, state);
     bool valid = true;
@@ -3277,11 +3221,10 @@ bool ompl::geometric::BiHSCstar::isValid(const base::State *state)
         valid = false;
     else 
         freeCertificate(sc);
-    oTime_ += time::seconds(time::now() - starto);
     return valid;
 }
 
-bool ompl::geometric::BiHSCstar::isValid(Motion *motion, bool start, bool add)
+bool ompl::geometric::BiHSCstar::isValid(Motion *motion, bool start)
 {
     if (motion->stateValid == UnCkecked)
     {
@@ -3299,35 +3242,7 @@ bool ompl::geometric::BiHSCstar::isValid(Motion *motion, bool start, bool add)
             */
             return true;
         }
-        time::point starto = time::now();
         motion->stateValid = InValid;
-        if (add && addIntermediateState_ && motion->parent && motion->parent->stateValid == Valid)
-        {
-            if (checkInterMotion(motion->parent, motion, start))
-            {
-                if (start)
-                {
-                    int nd = si_->getStateSpace()->validSegmentCount(motion->parent->state, motion->state);
-                    if (nd >= 2)
-                    {
-                        Motion *last = new Motion(si_);
-                        si_->getStateSpace()->interpolate(motion->parent->state, motion->state, (double)(nd-1) / (double)nd, last->state);
-                        addIntermediateMotion(motion->parent, motion, start, last);
-                    }
-                }
-                else 
-                {
-                    int nd = si_->getStateSpace()->validSegmentCount(motion->state, motion->parent->state);
-                    if (nd >= 2)
-                    {
-                        Motion *last = new Motion(si_);
-                        si_->getStateSpace()->interpolate(motion->state, motion->parent->state, 1.0 / (double)nd, last->state);
-                        addIntermediateMotion(motion->parent, motion, start, last);
-                    }
-                }
-            }
-        }
-        
         if (!motion->parent)
         {
             if (start)
@@ -3382,10 +3297,9 @@ bool ompl::geometric::BiHSCstar::isValid(Motion *motion, bool start, bool add)
             motion->cell->data->disabled--;
             removeFromDisc(disc, motion);
         }
-        oTime_ += time::seconds(time::now() - starto);
-//        std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> scQueue;
-        removeInvalidCertificate(motion->sce, motion->scd, start);
-//        removeInvalidCertificate(scQueue, start);
+        std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> scQueue;
+        removeInvalidCertificate(motion->sce, motion->scd, start, scQueue);
+        removeInvalidCertificate(scQueue, start);
         return false;
     }
     return motion->stateValid == Valid;
@@ -3448,12 +3362,11 @@ void ompl::geometric::BiHSCstar::removeInvalidCertificate(SafetyCertificateWithE
         std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> &scQueue)
 {
     std::vector<Motion *> invalid = removeInvalidCertificate(msce, scd, start);
-//    std::unordered_set<base::SafetyCertificate *> temscs;
     for (auto &invmotion : invalid) // todo
     {
         for (auto &child : invmotion->children)
         {
-            if (child->sce && child->sce != msce)// && temscs.find(child->sce) == temscs.end())
+            if (child->sce && child->sce != msce)
             {
                 std::vector<double> scd = distanceCertificate_(child->sce->sc->state, invmotion->state);
                 if (!certificateOutside(scd, child->sce->sc->confidence_))
@@ -3497,15 +3410,17 @@ bool ompl::geometric::BiHSCstar::checkInterMotion1(Motion *smotion, Motion *gmot
     /*assume smotion, gmotion are valid*/
     bool valid = true;
     const base::State *s1 = smotion->state, *s2 = gmotion->state;
-    int nd = si_->getStateSpace()->validSegmentCount(s1, s2);
+    double dist = si_->distance(s1, s2);
+    auto space = si_->getStateSpace();
+    int nd = (int)ceil(dist / space->getLongestValidSegmentLength());
     if (nd >= 2)
     {
         base::SafetyCertificate *sc = new base::SafetyCertificate(si_, certificateDim_);
         base::State *st = nullptr;
-        int i = 1;
-        while (i < nd)
+        double delta = 1.0 / (double)nd, ratio = delta;
+        for (int i = 1; i < nd; i++)
         {
-            si_->getStateSpace()->interpolate(s1, s2, (double)i / (double)nd, sc->state);
+            si_->getStateSpace()->interpolate(s1, s2, ratio, sc->state);
             if (useCollisionCertificateChecker_)
             {
                 CoordSC xcoord(projectionEvaluator_->getDimension());
@@ -3526,18 +3441,17 @@ bool ompl::geometric::BiHSCstar::checkInterMotion1(Motion *smotion, Motion *gmot
                 if (useCollisionCertificateChecker_)
                     si_->copyState(st, sc->state);
                 else 
-                    si_->getStateSpace()->interpolate(s1, s2, (double)i / (double)nd, st);
+                    si_->getStateSpace()->interpolate(s1, s2, ratio, st);
                 valid = false;
                 break;
             }
-            i++;
+            ratio += delta;
         }
         if (!valid)
         {
-            i--;
-            double ratio = (double)i/(double)nd;
-            if (ratio > minValidPathFraction_)
+            if (addIntermediateState_ && ratio * dist > 0.25 * maxDistance_)
             {
+                ratio -= delta;
                 Motion *last = new Motion(si_);
                 si_->getStateSpace()->interpolate(s1, s2, ratio, last->state);
                 addIntermediateMotion(smotion, gmotion, start, last);
@@ -3545,16 +3459,16 @@ bool ompl::geometric::BiHSCstar::checkInterMotion1(Motion *smotion, Motion *gmot
             if (smotion->sce) // todo 
             {
                 std::vector<double> scd = distanceCertificate_(smotion->sce->sc->state, st);
-//                std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> scQueue;
-                removeInvalidCertificate(smotion->sce, scd, start);
-//                removeInvalidCertificate(scQueue, start);
+                std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> scQueue;
+                removeInvalidCertificate(smotion->sce, scd, start, scQueue);
+                removeInvalidCertificate(scQueue, start);
             }
             if (gmotion->sce && gmotion->sce != smotion->sce)
             {
                 std::vector<double> scd = distanceCertificate_(gmotion->sce->sc->state, st);
-//                std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> scQueue;
-                removeInvalidCertificate(gmotion->sce, scd, start);
-//                removeInvalidCertificate(scQueue, start);
+                std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> scQueue;
+                removeInvalidCertificate(gmotion->sce, scd, start, scQueue);
+                removeInvalidCertificate(scQueue, start);
             }
             si_->freeState(st);
         }
@@ -3569,15 +3483,17 @@ bool ompl::geometric::BiHSCstar::checkInterMotion2(Motion *smotion, Motion *gmot
     /*assume smotion, gmotion are valid*/
     bool valid = true;
     const base::State *s1 = smotion->state, *s2 = gmotion->state;
-    int nd = si_->getStateSpace()->validSegmentCount(s1, s2);
+    double dist = si_->distance(s1, s2);
+    auto space = si_->getStateSpace();
+    int nd = (int)ceil(dist / space->getLongestValidSegmentLength());
     if (nd >= 2)
     {
         base::SafetyCertificate *sc = new base::SafetyCertificate(si_, certificateDim_);
         base::State *st = nullptr;
-        int i = nd - 1;
-        while (i > 0)
+        double delta = 1.0 / (double)nd, ratio = 1.0 - delta;
+        for (int i = nd - 1; i > 0; i--)
         {
-            si_->getStateSpace()->interpolate(s1, s2, (double)i / (double)nd, sc->state);
+            si_->getStateSpace()->interpolate(s1, s2, ratio, sc->state);
             if (useCollisionCertificateChecker_)
             {
                 CoordSC xcoord(projectionEvaluator_->getDimension());
@@ -3598,18 +3514,17 @@ bool ompl::geometric::BiHSCstar::checkInterMotion2(Motion *smotion, Motion *gmot
                 if (useCollisionCertificateChecker_)
                     si_->copyState(st, sc->state);
                 else 
-                    si_->getStateSpace()->interpolate(s1, s2, (double)i / (double)nd, st);
+                    si_->getStateSpace()->interpolate(s1, s2, ratio, st);
                 valid = false;
                 break;
             }
-            i--;
+            ratio -= delta;
         }
         if (!valid)
         {
-            i++;
-            double ratio = (double)i/(double)nd;
-            if (ratio < 1.0 - minValidPathFraction_)
+            if (addIntermediateState_ && ratio * dist < 0.75 * maxDistance_)
             {
+                ratio += delta;
                 Motion *last = new Motion(si_);
                 si_->getStateSpace()->interpolate(s1, s2, ratio, last->state);
                 addIntermediateMotion(gmotion, smotion, start, last);
@@ -3617,16 +3532,16 @@ bool ompl::geometric::BiHSCstar::checkInterMotion2(Motion *smotion, Motion *gmot
             if (smotion->sce) // todo 
             {
                 std::vector<double> scd = distanceCertificate_(smotion->sce->sc->state, st);
-//                std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> scQueue;
-                removeInvalidCertificate(smotion->sce, scd, start);
-//                removeInvalidCertificate(scQueue, start);
+                std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> scQueue;
+                removeInvalidCertificate(smotion->sce, scd, start, scQueue);
+                removeInvalidCertificate(scQueue, start);
             }
             if (gmotion->sce && gmotion->sce != smotion->sce)
             {
                 std::vector<double> scd = distanceCertificate_(gmotion->sce->sc->state, st);
-//                std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> scQueue;
-                removeInvalidCertificate(gmotion->sce, scd, start);
-//                removeInvalidCertificate(scQueue, start);
+                std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> scQueue;
+                removeInvalidCertificate(gmotion->sce, scd, start, scQueue);
+                removeInvalidCertificate(scQueue, start);
             }
             si_->freeState(st);
         }
@@ -3714,14 +3629,13 @@ bool ompl::geometric::BiHSCstar::isStateValid(Motion *motion, bool start, bool &
     base::Cost &currentCost = start ? currentStartCost_ : currentGoalCost_;
     std::vector<Motion *> &pnullMotions= start ? pnullStartMotions_: pnullGoalMotions_;
     std::vector<Motion *> &invalidMotions = start ? invalidStartMotions_ : invalidGoalMotions_;
-    std::vector<Motion *> nullMotions;
     for (std::size_t i = mpath.size() - 2; i < mpath.size(); i--)
     {
         motion = mpath[i];
         Motion *pmotion = mpath[i+1];
         base::Cost cost = motion->cost;
         std::size_t epos = invalidMotions.size(), spos = epos;
-        if (!isValid(motion, start, true))
+        if (!isValid(motion, start))
         {
             tvalid = false;
             Motion *last = nullptr;
@@ -3760,12 +3674,10 @@ bool ompl::geometric::BiHSCstar::isStateValid(Motion *motion, bool start, bool &
                 }
                 else 
                 {
-                    last->valid = ValidP;
+                    last->valid = UnCkeckedP;
                     last->pmotion = pmotion;
                     last->pmotion->pchildren.push_back(last);
                     pnullMotions.push_back(last);
-                    nullMotions.push_back(last);
-                    last->cell->data->root++;
                 }
             }
             else 
@@ -3784,19 +3696,6 @@ bool ompl::geometric::BiHSCstar::isStateValid(Motion *motion, bool start, bool &
             if (stop)
                 break;
         }
-    }
-    for (auto & nullm : nullMotions)
-    {
-        for (auto & child : nullm->children)
-        {
-            child->valid = UnCkeckedP;
-            child->parent = nullptr;
-            child->pmotion = nullm;
-            child->pmotion->pchildren.push_back(child);
-            pnullMotions.push_back(child);
-            child->cell->data->root++;
-        }
-        nullm->children.clear();
     }
     return tvalid;
 }

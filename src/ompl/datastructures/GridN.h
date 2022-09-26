@@ -38,6 +38,7 @@
 #define OMPL_DATASTRUCTURES_GRID_N_
 
 #include "ompl/datastructures/Grid.h"
+#include <numeric>
 
 namespace ompl
 {

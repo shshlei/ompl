@@ -98,9 +98,20 @@ namespace ompl
             }
 
             /** \brief Check if a given state is valid or not */
+            bool isValid(const State *state, double &dist) const
+            {
+                return stateValidityChecker_->isValid(state, dist);
+            }
+
+            /** \brief Check if a given state is valid or not */
             bool isValid(const State *state, ContactResultVector &contactVector, double &dist) const
             {
                 return stateValidityChecker_->isValid(state, contactVector, dist);
+            }
+
+            double clearance(const State *state) const
+            {
+                return stateValidityChecker_->clearance(state);
             }
 
             /** \brief Return the instance of the used state space */

@@ -140,6 +140,7 @@ void ompl::geometric::BiASE::setup()
         OMPL_INFORM("%s: problem definition is not set, deferring setup completion...", getName().c_str());
         setup_ = false;
     }
+    symmetric_ = si_->getStateSpace()->hasSymmetricDistance() && si_->getStateSpace()->hasSymmetricInterpolate();
 }
 
 void ompl::geometric::BiASE::freeMemory()
@@ -1153,7 +1154,7 @@ bool ompl::geometric::BiASE::backPathRewireMotion(Motion *motion, bool start, Mo
                     continue;
                 if (!isValidNeighbor(motion, nb))
                 {
-                    if (start ? checkInterMotion(nb, motion, start) : checkInterMotion(motion, nb, start))
+                    if (checkInterMotion(nb, motion, start))
                     {
                         insertNeighbor(nb, motion);
                         disc.updateNbh(nb->cell, motion->cell);
@@ -1355,10 +1356,7 @@ void ompl::geometric::BiASE::removeFromParent(Motion *motion)
 void ompl::geometric::BiASE::removeFromPnull(std::vector<Motion *> &pnullMotions, Motion *motion)
 {
     if (removeFromVector(pnullMotions, motion))
-    {
         motion->pmotion = nullptr;
-        motion->cell->data->root--;
-    }
 }
 
 bool ompl::geometric::BiASE::removeFromVector(std::vector<Motion *> &motions, Motion *motion)
@@ -1394,16 +1392,16 @@ bool ompl::geometric::BiASE::isValid(const base::State *state)
     return valid;
 }
 
-bool ompl::geometric::BiASE::checkStartMotion(Motion *smotion, Motion *gmotion)
+bool ompl::geometric::BiASE::checkMotion(Motion *pmotion, Motion *motion, bool start)
 {
-    if (!gmotion->valid)
+    if (!motion->valid)
     {
-        if (!checkInterMotion(smotion, gmotion, true))
+        if (!checkInterMotion(pmotion, motion, start))
         {
-            if (opt_->isFinite(gmotion->cost))
+            if (opt_->isFinite(motion->cost))
             {
                 std::unordered_set<Cell *> cells;
-                setMotionInfinityCostWithDisable(gmotion, cells);
+                setMotionInfinityCostWithDisable(motion, cells);
                 if (rewireSort_)
                 {
                     for (auto & cell : cells)
@@ -1430,103 +1428,121 @@ bool ompl::geometric::BiASE::checkStartMotion(Motion *smotion, Motion *gmotion)
                     }
                 }
             }
-            insertInvalidNeighbor(smotion, gmotion);
+            insertInvalidNeighbor(pmotion, motion);
         }
         else 
         {
-            gmotion->valid = true;
-            insertNeighbor(gmotion, smotion);
-            dStart_.updateNbh(gmotion->cell, smotion->cell);
+            motion->valid = true;
+            insertNeighbor(pmotion, motion);
+            CellDiscretizationData &disc = start ? dStart_ : dGoal_;
+            disc.updateNbh(pmotion->cell, motion->cell);
         }
     }
-    return gmotion->valid;
+    return motion->valid;
 }
 
-bool ompl::geometric::BiASE::checkGoalMotion(Motion *smotion, Motion *gmotion)
+bool ompl::geometric::BiASE::checkInterMotion(Motion *pmotion, Motion *motion, bool start)
 {
-    if (!smotion->valid)
-    {
-        if (!checkInterMotion(smotion, gmotion, false))
-        {
-            if (opt_->isFinite(smotion->cost))
-            {
-                std::unordered_set<Cell *> cells;
-                setMotionInfinityCostWithDisable(smotion, cells);
-                if (rewireSort_)
-                {
-                    for (auto & cell : cells)
-                    {
-                        if (cell->data->motions.size() == cell->data->disabled)
-                        {
-                            cell->data->cmotion = nullptr;
-                            cell->data->mmotion = nullptr;
-                        }
-                        else 
-                        {
-                            bool e1 = !cell->data->cmotion || !opt_->isFinite(cell->data->cmotion->cost);
-                            bool e2 = !cell->data->mmotion || !opt_->isFinite(cell->data->mmotion->cost);
-                            if (e1 || e2)
-                            {
-                                EnableSort esort(opt_);
-                                std::sort(cell->data->motions.begin(), cell->data->motions.end(), esort);
-                                if (e1)
-                                    cell->data->cmotion = *std::min_element(cell->data->motions.begin(), cell->data->motions.end() - cell->data->disabled, mc_);
-                                if (e2)
-                                    cell->data->mmotion = *std::max_element(cell->data->motions.begin(), cell->data->motions.end() - cell->data->disabled, mc_);
-                            }
-                        }
-                    }
-                }
-            }
-            insertInvalidNeighbor(smotion, gmotion);
-        }
-        else 
-        {
-            smotion->valid = true;
-            insertNeighbor(gmotion, smotion);
-            dGoal_.updateNbh(gmotion->cell, smotion->cell);
-        }
-    }
-    return smotion->valid;
+    bool valid = false;
+    if (start || symmetric_)
+        valid = checkInterMotion1(pmotion, motion, start);
+    else 
+        valid = checkInterMotion2(motion, pmotion, start);
+    return valid;
 }
 
-bool ompl::geometric::BiASE::checkInterMotion(Motion *smotion, Motion *gmotion, bool /*start*/)
+bool ompl::geometric::BiASE::checkInterMotion1(Motion *smotion, Motion *gmotion, bool start)
 {
-    /*assume smotion, gmotion are valid*/
     bool valid = true;
+    /*assume smotion, gmotion are valid*/
     const base::State *s1 = smotion->state, *s2 = gmotion->state;
-    int nd = si_->getStateSpace()->validSegmentCount(s1, s2);
+    double dist = si_->distance(s1, s2);
+    auto space = si_->getStateSpace();
+    int nd = (int)ceil(dist / space->getLongestValidSegmentLength());
     if (nd >= 2)
     {
-        std::queue<std::pair<int, int>> pos;
-        pos.emplace(1, nd - 1);
-
         base::State *state= si_->allocState();
-
-        /* repeatedly subdivide the path segment in the middle (and check the middle) */
-        while (!pos.empty())
+        double ratio = 1.0 / (double)nd, delta = ratio;
+        for (int i = 1; i < nd; i++)
         {
-            std::pair<int, int> x = pos.front();
-            int mid = (x.first + x.second) / 2;
-            si_->getStateSpace()->interpolate(s1, s2, (double)mid / (double)nd, state);
-
+            si_->getStateSpace()->interpolate(s1, s2, ratio, state);
             if (!si_->isValid(state))
             {
                 valid = false;
                 break;
             }
-
-            pos.pop();
-
-            if (x.first < mid)
-                pos.emplace(x.first, mid - 1);
-            if (x.second > mid)
-                pos.emplace(mid + 1, x.second);
+            ratio += delta;
         }
-
+        if (!valid && addIntermediateState_ && ratio * dist > 0.25 * maxDistance_)
+        {
+            ratio -= delta;
+            Motion *last = new Motion(si_);
+            si_->getStateSpace()->interpolate(s1, s2, ratio, last->state);
+            addIntermediateMotion(smotion, gmotion, start, last);
+        }
         si_->freeState(state);
     }
     return valid;
+}
+
+bool ompl::geometric::BiASE::checkInterMotion2(Motion *smotion, Motion *gmotion, bool start)
+{
+    bool valid = true;
+    /*assume smotion, gmotion are valid*/
+    const base::State *s1 = smotion->state, *s2 = gmotion->state;
+    double dist = si_->distance(s1, s2);
+    auto space = si_->getStateSpace();
+    int nd = (int)ceil(dist / space->getLongestValidSegmentLength());
+    if (nd >= 2)
+    {
+        base::State *state= si_->allocState();
+        double delta = 1.0 / (double)nd, ratio = 1.0 - delta;
+        for (int i = nd - 1; i > 0; i--)
+        {
+            si_->getStateSpace()->interpolate(s1, s2, ratio, state);
+            if (!si_->isValid(state))
+            {
+                valid = false;
+                break;
+            }
+            ratio -= delta;
+        }
+        if (!valid && addIntermediateState_ && ratio * dist < 0.75 * maxDistance_)
+        {
+            ratio += delta;
+            Motion *last = new Motion(si_);
+            si_->getStateSpace()->interpolate(s1, s2, ratio, last->state);
+            addIntermediateMotion(gmotion, smotion, start, last);
+        }
+        si_->freeState(state);
+    }
+    return valid;
+}
+
+void ompl::geometric::BiASE::addIntermediateMotion(Motion *pmotion, Motion *motion, bool start, Motion *last)
+{
+    TreeData &tree = start ? tStart_ : tGoal_;
+    last->valid = true;
+    connectToPmotion(last, pmotion, start);
+    last->parent->children.push_back(last);
+    tree->add(last);
+
+    CellDiscretizationData &disc = start ? dStart_ : dGoal_;
+    Coord xcoord(projectionEvaluator_->getDimension());
+    projectionEvaluator_->computeCoordinates(last->state, xcoord);
+    addToDisc(disc, last, xcoord);
+    if (!opt_->isFinite(last->cost))
+        last->cell->data->disabled++;
+    insertNeighbor(last, pmotion);
+    disc.updateNbh(last->cell, pmotion->cell);
+    insertInvalidNeighbor(last, motion);
+    if (rewireSort_)
+    {
+        if (!last->cell->data->cmotion || opt_->isCostBetterThan(last->cost, last->cell->data->cmotion->cost))
+            last->cell->data->cmotion = last;
+        if (!last->cell->data->mmotion || !opt_->isCostBetterThan(last->cost, last->cell->data->mmotion->cost))
+            last->cell->data->mmotion = last;
+    }
 }
 
 void ompl::geometric::BiASE::getPlannerData(base::PlannerData &data) const
@@ -1709,12 +1725,11 @@ bool ompl::geometric::BiASE::isPathValid(Motion *motion, bool start)
     }
     mpath.pop_back();
     std::vector<Motion *> &pnullMotions= start ? pnullStartMotions_: pnullGoalMotions_;
-    std::vector<Motion *> nullMotions;
     for (std::size_t i = mpath.size() - 1; i < mpath.size(); i--)
     {
         motion = mpath[i];
         Motion *pmotion = motion->parent;
-        if (start ? !checkStartMotion(pmotion, motion) : !checkGoalMotion(motion, pmotion))
+        if (!checkMotion(pmotion, motion, start))
         {
             removeFromParent(motion);
             motion->parent = nullptr;
@@ -1746,24 +1761,10 @@ bool ompl::geometric::BiASE::isPathValid(Motion *motion, bool start)
             else if (!motion->parent)
             {
                 pnullMotions.push_back(motion);
-                motion->valid = true;
+                motion->valid = false;
                 motion->pmotion = pmotion;
-                nullMotions.push_back(motion);
-                motion->cell->data->root++;
             }
         }
-    }
-    for (auto & nullm : nullMotions)
-    {
-        for (auto & child : nullm->children)
-        {
-            child->valid = false;
-            child->parent = nullptr;
-            child->pmotion = nullm;
-            pnullMotions.push_back(child);
-            child->cell->data->root++;
-        }
-        nullm->children.clear();
     }
     return tvalid;
 }
@@ -1778,34 +1779,19 @@ bool ompl::geometric::BiASE::isPathValidInter(Motion *motion, bool start)
         motion = motion->parent;
     }
     std::vector<Motion *> &pnullMotions= start ? pnullStartMotions_: pnullGoalMotions_;
-    std::vector<Motion *> nullMotions;
     for (std::size_t i = mpath.size() - 1; i < mpath.size(); i--)
     {
         motion = mpath[i];
         Motion *pmotion = motion->parent;
-        if (start ? !checkStartMotion(pmotion, motion) : !checkGoalMotion(motion, pmotion))
+        if (!checkMotion(pmotion, motion, start))
         {
             removeFromParent(motion);
             motion->parent = nullptr;
             tvalid = false;
             pnullMotions.push_back(motion);
-            motion->valid = true;
+            motion->valid = false;
             motion->pmotion = pmotion;
-            nullMotions.push_back(motion);
-            motion->cell->data->root++;
         }
-    }
-    for (auto & nullm : nullMotions)
-    {
-        for (auto & child : nullm->children)
-        {
-            child->valid = false;
-            child->parent = nullptr;
-            child->pmotion = nullm;
-            pnullMotions.push_back(child);
-            child->cell->data->root++;
-        }
-        nullm->children.clear();
     }
     return tvalid;
 }
@@ -1826,7 +1812,7 @@ bool ompl::geometric::BiASE::isPathValidInter(Motion *motion, bool start) // bac
     {
         motion = mpath[i];
         Motion *pmotion = motion->parent;
-        if (start ? !checkStartMotion(pmotion, motion) : !checkGoalMotion(motion, pmotion))
+        if (!checkMotion(pmotion, motion, start))
         {
             removeFromParent(motion);
             motion->parent = nullptr;

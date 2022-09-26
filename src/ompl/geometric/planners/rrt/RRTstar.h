@@ -527,8 +527,6 @@ namespace ompl
             /** \brief Number of iterations the algorithm performed */
             unsigned int iterations_{0u};
 
-            double oTime_{0};
-
             ///////////////////////////////////////
             // Planner progress property functions
             std::string numIterationsProperty() const
@@ -538,10 +536,6 @@ namespace ompl
             std::string bestCostProperty() const
             {
                 return std::to_string(bestCost().value());
-            }
-            std::string collisionCheckTimeProperty() const
-            {
-                return std::to_string(oTime_);
             }
         };
     }

@@ -94,6 +94,16 @@ namespace ompl
                 return penDistance_;
             }
 
+            void setAddIntermediateState(bool add)
+            {
+                addIntermediateState_ = add;
+            }
+
+            bool getAddIntermediateState() const
+            {
+                return addIntermediateState_;
+            }
+
             void setUseBispace(bool bispace)
             {
                 if (!bispace)
@@ -207,9 +217,6 @@ namespace ompl
 
                 /** \brief The disabled motion number in this cell */
                 std::size_t disabled{0};
-
-                /** \brief The root motion number in this cell */
-                std::size_t root{0};
             };
 
             using CellDiscretizationData = GridN<CellData *>;
@@ -266,7 +273,7 @@ namespace ompl
                 /** \brief Order function */
                 bool operator()(const Cell *const a, const Cell *const b) const
                 {
-                    return 100 * a->data->root + a->data->disabled < 100 * b->data->root + b->data->disabled;
+                    return a->data->disabled < b->data->disabled;
                 }
             };
 
@@ -423,11 +430,15 @@ namespace ompl
             bool isValid(const base::State *state);
 
             // check
-            bool checkStartMotion(Motion *smotion, Motion *gmotion);
+            bool checkMotion(Motion *pmotion, Motion *motion, bool start);
 
-            bool checkGoalMotion(Motion *smotion, Motion *gmotion);
+            bool checkInterMotion(Motion *pmotion, Motion *motion, bool start);
 
-            bool checkInterMotion(Motion *smotion, Motion *gmotion, bool start);
+            bool checkInterMotion1(Motion *smotion, Motion *gmotion, bool start);
+
+            bool checkInterMotion2(Motion *smotion, Motion *gmotion, bool start);
+
+            void addIntermediateMotion(Motion *pmotion, Motion *motion, bool start, Motion *last);
 
             void insertNeighbor(Motion *pmotion, Motion *motion);
 
@@ -497,9 +508,13 @@ namespace ompl
 
             std::vector<double> maxDistanceV_, penDistanceV_;
 
+            bool addIntermediateState_{true};
+
             bool backRewire_{true};
 
             bool rewireSort_{true};
+
+            bool symmetric_{true};
 
             /** \brief Objective we're optimizing */
             base::OptimizationObjectivePtr opt_;

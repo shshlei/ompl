@@ -139,10 +139,7 @@ ompl::geometric::RRTConnect::GrowState ompl::geometric::RRTConnect::growTree(Tre
         reach = false;
     }
 
-    bool validMotion = tgi.start ? si_->checkMotion(nmotion->state, dstate) :
-                                   si_->isValid(dstate) && si_->checkMotion(dstate, nmotion->state);
-
-    if (!validMotion)
+    if (!si_->checkMotion(nmotion->state, dstate))
         return TRAPPED;
 
     if (addIntermediateStates_)
@@ -269,7 +266,7 @@ ompl::base::PlannerStatus ompl::geometric::RRTConnect::solve(const base::Planner
 
             /* if reached, it means we used rstate directly, no need to copy again */
             if (gs != REACHED)
-                si_->copyState(rstate, tgi.xstate);
+                si_->copyState(rstate, addedMotion->state);
 
             tgi.start = startTree;
 

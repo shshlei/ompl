@@ -50,7 +50,6 @@ ompl::geometric::BiHSC::BiHSC(const base::SpaceInformationPtr &si) : base::Plann
     Planner::declareParam<double>("pen_distance", this, &BiHSC::setPenDistance, &BiHSC::getPenDistance, "0.:0.1:10000.");
     Planner::declareParam<bool>("lazy_path", this, &BiHSC::setLazyPath, &BiHSC::getLazyPath, "0,1");
     Planner::declareParam<bool>("lazy_node", this, &BiHSC::setLazyNode, &BiHSC::getLazyNode, "0,1");
-    Planner::declareParam<bool>("add_intermediate_state", this, &BiHSC::setAddIntermediateState, &BiHSC::getAddIntermediateState, "0,1");
     Planner::declareParam<bool>("use_bispace", this, &BiHSC::setUseBispace, &BiHSC::getUseBispace, "0,1");
 //    Planner::declareParam<bool>("use_biasgrow", this, &BiHSC::setUseBiasGrow, &BiHSC::getUseBiasGrow, "0,1");
 //    Planner::declareParam<bool>("treated_as_multi_subapce", this, &BiHSC::setTreatedAsMultiSubapce, &BiHSC::getTreatedAsMultiSubapce, "0,1");
@@ -87,9 +86,6 @@ void ompl::geometric::BiHSC::setup()
         sc.configurePlannerRange(maxDistance_);
         sc.configurePenetrationDistance(penDistance_);
     }
-
-    if (minValidPathFraction_ < std::numeric_limits<double>::epsilon() || minValidPathFraction_ > 1.0)
-        throw Exception("The minimum valid path fraction must be in the range (0,1]");
 
     sc.configureProjectionEvaluator(projectionEvaluator_);
     if (rewire_)
@@ -288,7 +284,7 @@ ompl::base::PlannerStatus ompl::geometric::BiHSC::solve(const base::PlannerTermi
     bool solved = false;
     Motion *bestStartMotion = nullptr;
     Motion *bestGoalMotion = nullptr;
-    while (!ptc && !solved)
+    while (!ptc)
     {
         if (pis_.getSampledGoalsCount() < tGoal_->size() / 2)
         {
@@ -344,7 +340,6 @@ ompl::base::PlannerStatus ompl::geometric::BiHSC::solve(const base::PlannerTermi
                     valid = isPathValid(pair.first, pair.second);
                 else 
                     valid = isPathValid(pair.first, pair.second, !startTree);
-
                 if (valid)
                 {
                     solved = true;
@@ -354,6 +349,8 @@ ompl::base::PlannerStatus ompl::geometric::BiHSC::solve(const base::PlannerTermi
                 }
             }
         }
+        if (solved)
+            break;
         if (!rewire_)
             removeInvalidMotionsDirectly();
         else if (lazyNode_)
@@ -1587,7 +1584,6 @@ bool ompl::geometric::BiHSC::isPathValid(Motion *motion, bool start)
     }
     std::vector<Motion *> &pnullMotions= start ? pnullStartMotions_: pnullGoalMotions_;
     std::vector<Motion *> &invalidMotions = start ? invalidStartMotions_ : invalidGoalMotions_;
-    std::vector<Motion *> nullMotions;
     for (std::size_t i = mpath.size() - 1; i < mpath.size(); i--)
     {
         motion = mpath[i];
@@ -1618,10 +1614,8 @@ bool ompl::geometric::BiHSC::isPathValid(Motion *motion, bool start)
                 else 
                 {
                     pnullMotions.push_back(motion);
-                    motion->valid = ValidP;
+                    motion->valid = UnCkeckedP;
                     motion->pmotion = pmotion;
-                    nullMotions.push_back(motion);
-                    motion->cell->data->root++;
                 }
             }
             else 
@@ -1631,18 +1625,6 @@ bool ompl::geometric::BiHSC::isPathValid(Motion *motion, bool start)
             else 
                 break;
         }
-    }
-    for (auto & nullm : nullMotions)
-    {
-        for (auto & child : nullm->children)
-        {
-            child->valid = UnCkeckedP;
-            child->parent = nullptr;
-            child->pmotion = nullm;
-            pnullMotions.push_back(child);
-            child->cell->data->root++;
-        }
-        nullm->children.clear();
     }
     return tvalid;
 }
@@ -1660,7 +1642,6 @@ bool ompl::geometric::BiHSC::isPathValidInter(Motion *motion, bool start)
     }
     std::vector<Motion *> &pnullMotions= start ? pnullStartMotions_: pnullGoalMotions_;
     std::vector<Motion *> &invalidMotions = start ? invalidStartMotions_ : invalidGoalMotions_;
-    std::vector<Motion *> nullMotions;
     for (std::size_t i = mpath.size() - 1; i < mpath.size(); i--)
     {
         motion = mpath[i];
@@ -1681,27 +1662,13 @@ bool ompl::geometric::BiHSC::isPathValidInter(Motion *motion, bool start)
                         child->pmotion = pmotion;
                 }
                 pnullMotions.push_back(motion);
-                motion->valid = ValidP;
+                motion->valid = UnCkeckedP;
                 motion->pmotion = pmotion;
-                nullMotions.push_back(motion);
-                motion->cell->data->root++;
             }
             else 
                 pnullMotions.push_back(motion);
             break;
         }
-    }
-    for (auto & nullm : nullMotions)
-    {
-        for (auto & child : nullm->children)
-        {
-            child->valid = UnCkeckedP;
-            child->parent = nullptr;
-            child->pmotion = nullm;
-            pnullMotions.push_back(child);
-            child->cell->data->root++;
-        }
-        nullm->children.clear();
     }
     return tvalid;
 }
@@ -1785,7 +1752,6 @@ bool ompl::geometric::BiHSC::isPathValidLazy(Motion *motion, bool start)
 {
     if (lazyNode_ && !isStateValid(motion, start))
         return false;
-    /*
     bool tvalid = true;
     std::vector<Motion *> mpath;
     while (motion->parent)
@@ -1795,7 +1761,6 @@ bool ompl::geometric::BiHSC::isPathValidLazy(Motion *motion, bool start)
     }
     std::vector<Motion *> &pnullMotions= start ? pnullStartMotions_: pnullGoalMotions_;
     std::vector<Motion *> &invalidMotions = start ? invalidStartMotions_ : invalidGoalMotions_;
-    std::vector<Motion *> nullMotions;
     for (std::size_t i = mpath.size() - 1; i < mpath.size(); i--)
     {
         motion = mpath[i];
@@ -1832,10 +1797,8 @@ bool ompl::geometric::BiHSC::isPathValidLazy(Motion *motion, bool start)
                 else 
                 {
                     pnullMotions.push_back(motion);
-                    motion->valid = ValidP;
+                    motion->valid = UnCkeckedP;
                     motion->pmotion = pmotion;
-                    nullMotions.push_back(motion);
-                    motion->cell->data->root++;
                 }
             }
             else 
@@ -1846,21 +1809,7 @@ bool ompl::geometric::BiHSC::isPathValidLazy(Motion *motion, bool start)
                 break;
         }
     }
-    for (auto & nullm : nullMotions)
-    {
-        for (auto & child : nullm->children)
-        {
-            child->valid = UnCkeckedP;
-            child->parent = nullptr;
-            child->pmotion = nullm;
-            pnullMotions.push_back(child);
-            child->cell->data->root++;
-        }
-        nullm->children.clear();
-    }
     return tvalid;
-    */
-    return true;
 }
 
 void ompl::geometric::BiHSC::removeInvalidMotionsDirectly()
@@ -1950,7 +1899,6 @@ void ompl::geometric::BiHSC::removeInvalidMotionsTree(double ratio)
         {
             child->parent = nullptr;
             pnullStartMotions_.push_back(child);
-            child->cell->data->root++;
         }
         pnull->children.clear();
     }
@@ -1975,7 +1923,6 @@ void ompl::geometric::BiHSC::removeInvalidMotionsTree(double ratio)
         {
             child->parent = nullptr;
             pnullGoalMotions_.push_back(child);
-            child->cell->data->root++;
         }
         pnull->children.clear();
     }
@@ -2170,10 +2117,7 @@ void ompl::geometric::BiHSC::removeFromParent(Motion *motion)
 void ompl::geometric::BiHSC::removeFromPnull(std::vector<Motion *> &pnullMotions, Motion *motion)
 {
     if (removeFromVector(pnullMotions, motion))
-    {
         motion->pmotion = nullptr;
-        motion->cell->data->root--;
-    }
 }
 
 bool ompl::geometric::BiHSC::removeFromVector(std::vector<Motion *> &motions, Motion *motion)
@@ -2554,7 +2498,7 @@ bool ompl::geometric::BiHSC::isValid(const base::State *state)
     return valid;
 }
 
-bool ompl::geometric::BiHSC::isValid(Motion *motion, bool start, bool add)
+bool ompl::geometric::BiHSC::isValid(Motion *motion, bool start)
 {
     if (motion->stateValid == UnCkecked)
     {
@@ -2573,33 +2517,6 @@ bool ompl::geometric::BiHSC::isValid(Motion *motion, bool start, bool add)
             return true;
         }
         motion->stateValid = InValid;
-        if (add && addIntermediateState_ && motion->parent && motion->parent->stateValid == Valid)
-        {
-            if (checkInterMotion(motion->parent, motion, start))
-            {
-                if (start)
-                {
-                    int nd = si_->getStateSpace()->validSegmentCount(motion->parent->state, motion->state);
-                    if (nd >= 2)
-                    {
-                        Motion *last = new Motion(si_);
-                        si_->getStateSpace()->interpolate(motion->parent->state, motion->state, (double)(nd-1) / (double)nd, last->state);
-                        addIntermediateMotion(motion->parent, motion, start, last);
-                    }
-                }
-                else 
-                {
-                    int nd = si_->getStateSpace()->validSegmentCount(motion->state, motion->parent->state);
-                    if (nd >= 2)
-                    {
-                        Motion *last = new Motion(si_);
-                        si_->getStateSpace()->interpolate(motion->state, motion->parent->state, 1.0 / (double)nd, last->state);
-                        addIntermediateMotion(motion->parent, motion, start, last);
-                    }
-                }
-            }
-        }
-        
         if (!motion->parent)
         {
             if (start)
@@ -2662,9 +2579,9 @@ bool ompl::geometric::BiHSC::isValid(Motion *motion, bool start, bool add)
             motion->cell->data->disabled--;
             removeFromDisc(disc, motion);
         }
-//        std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> scQueue;
-        removeInvalidCertificate(motion->sce, motion->scd, start);
-//        removeInvalidCertificate(scQueue, start);
+        std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> scQueue;
+        removeInvalidCertificate(motion->sce, motion->scd, start, scQueue);
+        removeInvalidCertificate(scQueue, start);
         return false;
     }
     return motion->stateValid == Valid;
@@ -2727,12 +2644,11 @@ void ompl::geometric::BiHSC::removeInvalidCertificate(SafetyCertificateWithElems
         std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> &scQueue)
 {
     std::vector<Motion *> invalid = removeInvalidCertificate(msce, scd, start);
-//    std::unordered_set<base::SafetyCertificate *> temscs;
     for (auto &invmotion : invalid) // todo
     {
         for (auto &child : invmotion->children)
         {
-            if (child->sce && child->sce != msce)// && temscs.find(child->sce) == temscs.end())
+            if (child->sce && child->sce != msce)
             {
                 std::vector<double> scd = distanceCertificate_(child->sce->sc->state, invmotion->state);
                 if (!certificateOutside(scd, child->sce->sc->confidence_))
@@ -2782,15 +2698,17 @@ bool ompl::geometric::BiHSC::checkInterMotion1(Motion *smotion, Motion *gmotion,
     /*assume smotion, gmotion are valid*/
     bool valid = true;
     const base::State *s1 = smotion->state, *s2 = gmotion->state;
-    int nd = si_->getStateSpace()->validSegmentCount(s1, s2);
+    double dist = si_->distance(s1, s2);
+    auto space = si_->getStateSpace();
+    int nd = (int)ceil(dist / space->getLongestValidSegmentLength());
     if (nd >= 2)
     {
         base::SafetyCertificate *sc = new base::SafetyCertificate(si_, certificateDim_);
         base::State *st = nullptr;
-        int i = 1;
-        while (i < nd)
+        double delta = 1.0 / (double)nd, ratio = delta;
+        for (int i = 1; i < nd; i++)
         {
-            si_->getStateSpace()->interpolate(s1, s2, (double)i / (double)nd, sc->state);
+            si_->getStateSpace()->interpolate(s1, s2, ratio, sc->state);
             if (useCollisionCertificateChecker_)
             {
                 CoordSC xcoord(projectionEvaluator_->getDimension());
@@ -2811,18 +2729,17 @@ bool ompl::geometric::BiHSC::checkInterMotion1(Motion *smotion, Motion *gmotion,
                 if (useCollisionCertificateChecker_)
                     si_->copyState(st, sc->state);
                 else 
-                    si_->getStateSpace()->interpolate(s1, s2, (double)i / (double)nd, st);
+                    si_->getStateSpace()->interpolate(s1, s2, ratio, st);
                 valid = false;
                 break;
             }
-            i++;
+            ratio += delta;
         }
         if (!valid)
         {
-            i--;
-            double ratio = (double)i/(double)nd;
-            if (ratio > minValidPathFraction_)
+            if (addIntermediateState_ && ratio * dist > 0.25 * maxDistance_)
             {
+                ratio -= delta;
                 Motion *last = new Motion(si_);
                 si_->getStateSpace()->interpolate(s1, s2, ratio, last->state);
                 addIntermediateMotion(smotion, gmotion, start, last);
@@ -2830,16 +2747,16 @@ bool ompl::geometric::BiHSC::checkInterMotion1(Motion *smotion, Motion *gmotion,
             if (smotion->sce) // todo 
             {
                 std::vector<double> scd = distanceCertificate_(smotion->sce->sc->state, st);
-//                std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> scQueue;
-                removeInvalidCertificate(smotion->sce, scd, start);
-//                removeInvalidCertificate(scQueue, start);
+                std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> scQueue;
+                removeInvalidCertificate(smotion->sce, scd, start, scQueue);
+                removeInvalidCertificate(scQueue, start);
             }
             if (gmotion->sce && gmotion->sce != smotion->sce)
             {
                 std::vector<double> scd = distanceCertificate_(gmotion->sce->sc->state, st);
-//                std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> scQueue;
-                removeInvalidCertificate(gmotion->sce, scd, start);
-//                removeInvalidCertificate(scQueue, start);
+                std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> scQueue;
+                removeInvalidCertificate(gmotion->sce, scd, start, scQueue);
+                removeInvalidCertificate(scQueue, start);
             }
             si_->freeState(st);
         }
@@ -2854,15 +2771,17 @@ bool ompl::geometric::BiHSC::checkInterMotion2(Motion *smotion, Motion *gmotion,
     /*assume smotion, gmotion are valid*/
     bool valid = true;
     const base::State *s1 = smotion->state, *s2 = gmotion->state;
-    int nd = si_->getStateSpace()->validSegmentCount(s1, s2);
+    double dist = si_->distance(s1, s2);
+    auto space = si_->getStateSpace();
+    int nd = (int)ceil(dist / space->getLongestValidSegmentLength());
     if (nd >= 2)
     {
         base::SafetyCertificate *sc = new base::SafetyCertificate(si_, certificateDim_);
         base::State *st = nullptr;
-        int i = nd - 1;
-        while (i > 0)
+        double delta = 1.0 / (double)nd, ratio = 1.0 - delta;
+        for (int i = nd - 1; i > 0; i--)
         {
-            si_->getStateSpace()->interpolate(s1, s2, (double)i / (double)nd, sc->state);
+            si_->getStateSpace()->interpolate(s1, s2, ratio, sc->state);
             if (useCollisionCertificateChecker_)
             {
                 CoordSC xcoord(projectionEvaluator_->getDimension());
@@ -2883,18 +2802,17 @@ bool ompl::geometric::BiHSC::checkInterMotion2(Motion *smotion, Motion *gmotion,
                 if (useCollisionCertificateChecker_)
                     si_->copyState(st, sc->state);
                 else 
-                    si_->getStateSpace()->interpolate(s1, s2, (double)i / (double)nd, st);
+                    si_->getStateSpace()->interpolate(s1, s2, ratio, st);
                 valid = false;
                 break;
             }
-            i--;
+            ratio -= delta;
         }
         if (!valid)
         {
-            i++;
-            double ratio = (double)i/(double)nd;
-            if (ratio < 1.0 - minValidPathFraction_)
+            if (addIntermediateState_ && ratio * dist < 0.75 * maxDistance_)
             {
+                ratio += delta;
                 Motion *last = new Motion(si_);
                 si_->getStateSpace()->interpolate(s1, s2, ratio, last->state);
                 addIntermediateMotion(gmotion, smotion, start, last);
@@ -2902,16 +2820,16 @@ bool ompl::geometric::BiHSC::checkInterMotion2(Motion *smotion, Motion *gmotion,
             if (smotion->sce) // todo 
             {
                 std::vector<double> scd = distanceCertificate_(smotion->sce->sc->state, st);
-//                std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> scQueue;
-                removeInvalidCertificate(smotion->sce, scd, start);
-//                removeInvalidCertificate(scQueue, start);
+                std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> scQueue;
+                removeInvalidCertificate(smotion->sce, scd, start, scQueue);
+                removeInvalidCertificate(scQueue, start);
             }
             if (gmotion->sce && gmotion->sce != smotion->sce)
             {
                 std::vector<double> scd = distanceCertificate_(gmotion->sce->sc->state, st);
-//                std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> scQueue;
-                removeInvalidCertificate(gmotion->sce, scd, start);
-//                removeInvalidCertificate(scQueue, start);
+                std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> scQueue;
+                removeInvalidCertificate(gmotion->sce, scd, start, scQueue);
+                removeInvalidCertificate(scQueue, start);
             }
             si_->freeState(st);
         }
@@ -3003,13 +2921,12 @@ bool ompl::geometric::BiHSC::isStateValid(Motion *motion, bool start)  // todo
     }
     std::vector<Motion *> &pnullMotions= start ? pnullStartMotions_: pnullGoalMotions_;
     std::vector<Motion *> &invalidMotions = start ? invalidStartMotions_ : invalidGoalMotions_;
-    std::vector<Motion *> nullMotions;
     for (std::size_t i = mpath.size() - 2; i < mpath.size(); i--)
     {
         motion = mpath[i];
         Motion *pmotion = mpath[i+1];
         std::size_t epos = invalidMotions.size(), spos = epos;
-        if (!isValid(motion, start, true))
+        if (!isValid(motion, start))
         {
             tvalid = false;
             if (rewire_)
@@ -3042,11 +2959,9 @@ bool ompl::geometric::BiHSC::isStateValid(Motion *motion, bool start)  // todo
                     }
                     else 
                     {
-                        last->valid = ValidP;
+                        last->valid = UnCkeckedP;
                         last->pmotion = pmotion;
                         pnullMotions.push_back(last);
-                        nullMotions.push_back(last);
-                        last->cell->data->root++;
                     }
                 }
                 else 
@@ -3061,18 +2976,6 @@ bool ompl::geometric::BiHSC::isStateValid(Motion *motion, bool start)  // todo
             if (!tvalid)
                 break;
         }
-    }
-    for (auto & nullm : nullMotions)
-    {
-        for (auto & child : nullm->children)
-        {
-            child->valid = UnCkeckedP;
-            child->parent = nullptr;
-            child->pmotion = nullm;
-            pnullMotions.push_back(child);
-            child->cell->data->root++;
-        }
-        nullm->children.clear();
     }
     return tvalid;
 }
