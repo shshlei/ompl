@@ -453,7 +453,7 @@ namespace ompl
 
                 bestCost_ = opt_->combineCosts(fwd_cost, rev_cost);
 
-                OMPL_DEBUG("Total path cost: %f\n", fwd_cost.value() + rev_cost.value());
+                OMPL_INFORM("Total path cost: %f\n", fwd_cost.value() + rev_cost.value());
                 return base::PlannerStatus(true, false);
             }
 
@@ -712,12 +712,15 @@ namespace ompl
                         {
                             // Only include neighbors that are mutually k-nearest
                             // Relies on NN datastructure returning k-nearest in sorted order
-                            const base::Cost connCost = opt_->motionCost(j->getState(), m->getState());
-                            const base::Cost worstCost =
-                                opt_->motionCost(neighborhoods_[j].back()->getState(), j->getState());
+                            if (!neighborhoods_[j].empty())
+                            {
+                                const base::Cost connCost = opt_->motionCost(j->getState(), m->getState());
+                                const base::Cost worstCost =
+                                    opt_->motionCost(neighborhoods_[j].back()->getState(), j->getState());
 
-                            if (opt_->isCostBetterThan(worstCost, connCost))
-                                continue;
+                                if (opt_->isCostBetterThan(worstCost, connCost))
+                                    continue;
+                            }
                             yNear.push_back(j);
                         }
                         else

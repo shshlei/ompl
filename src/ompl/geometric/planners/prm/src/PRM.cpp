@@ -503,7 +503,7 @@ ompl::base::PlannerStatus ompl::geometric::PRM::solve(const base::PlannerTermina
     // Ensure slnThread is ceased before exiting solve
     slnThread.join();
 
-    OMPL_INFORM("%s: Created %u states", getName().c_str(), boost::num_vertices(g_) - nrStartStates);
+    OMPL_INFORM("%s: Created %u states, solution cost %.5f", getName().c_str(), boost::num_vertices(g_) - nrStartStates, bestCost_.value());
 
     if (sol)
     {

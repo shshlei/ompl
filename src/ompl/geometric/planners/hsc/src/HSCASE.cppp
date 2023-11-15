@@ -1,0 +1,213 @@
+/*********************************************************************
+* Software License Agreement (BSD License)
+*
+*  Copyright (c) 2011, Rice University
+*  All rights reserved.
+*
+*  Redistribution and use in source and binary forms, with or without
+*  modification, are permitted provided that the following conditions
+*  are met:
+*
+*   * Redistributions of source code must retain the above copyright
+*     notice, this list of conditions and the following disclaimer.
+*   * Redistributions in binary form must reproduce the above
+*     copyright notice, this list of conditions and the following
+*     disclaimer in the documentation and/or other materials provided
+*     with the distribution.
+*   * Neither the name of the Rice University nor the names of its
+*     contributors may be used to endorse or promote products derived
+*     from this software without specific prior written permission.
+*
+*  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+*  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+*  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+*  FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+*  COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+*  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+*  BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+*  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+*  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+*  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+*  ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+*  POSSIBILITY OF SUCH DAMAGE.
+*********************************************************************/
+
+/* Authors: Shi Shenglei */
+
+#include "ompl/geometric/planners/hsc/HSCASE.h"
+
+ompl::geometric::HSCASE::HSCASE(const base::SpaceInformationPtr &si) : RRTBispace(si), BiHSC(si), BiASE(si)
+{
+    setName("HSCASE");
+    setLazyPath(true);
+}
+
+void ompl::geometric::HSCASE::setup()
+{
+    BiHSC::setup();
+}
+
+void ompl::geometric::HSCASE::clear()
+{
+    BiHSC::clear();
+
+    clearStartAdInfSampler();
+    clearGoalAdInfSampler();
+    startAdInfProb_ = startInfProb_ = 0.0;
+    localRatio_ = 0.75;
+}
+
+ompl::base::PlannerStatus ompl::geometric::HSCASE::solve(const base::PlannerTerminationCondition &ptc)
+{
+    base::PlannerStatus ps= prepareSolve(ptc);
+    if (ps != base::PlannerStatus::PREPARE_SUCCESS)
+        return ps;
+
+    clearStartAdInfSampler();
+    clearGoalAdInfSampler();
+    sampler_ = si_->allocStateSampler();
+
+    OMPL_INFORM("%s: Starting planning with %u states already in datastructure.", getName().c_str(), (tStart_->size() + tGoal_->size()));
+
+    bool startTree = true;
+    bool reverse = false;
+
+    Motion *startAd = nullptr, *goalAd = nullptr;
+
+    bool ais = false, adinf = true;
+    unsigned int adinfcount = 0;
+
+    while (!ptc)
+    {
+        if (pis_.getSampledGoalsCount() < tGoal_->size() / 2)
+        {
+            const base::State *st = pis_.nextGoal();
+            if (st != nullptr)
+            {
+                auto *motion = new Motion(si_);
+                si_->copyState(motion->state, st);
+                motion->valid = true;
+                motion->stateValid = Valid;
+                motion->root = motion->state;
+                motion->cost = opt_->identityCost();
+                tGoal_->add(motion);
+                goalMotions_.push_back(motion);
+                if (lazyNode_)
+                {
+                    base::SafetyCertificate *sc = new base::SafetyCertificate(si_, certificateDim_);
+                    si_->copyState(sc->state, st);
+                    delete sc->contact;
+                    sc->contact = nullptr;
+
+                    SafetyCertificateWithElems *sce = new SafetyCertificateWithElems();
+                    sce->sc = sc;
+                    sce->objects.push_back(motion);
+                    snne_.push_back(sce);
+
+                    motion->sce = sce;
+                    motion->scd.resize(certificateDim_);
+                    std::fill(motion->scd.begin(), motion->scd.end(), 0.0);
+                }
+            }
+        }
+
+        if (lazyNode_)
+            removeInvalidMotions(maxInvalidNodeRatio_);
+
+        batchGrow(startTree, ais, adinf);
+
+        if (startAd == nullptr)
+        {
+            std::size_t index = 0;
+            if (selectCMotion(index, reverse))
+            {
+                auto pair = connectionPoint_[index];
+                startAd = pair.first;
+                goalAd = pair.second;
+            }
+        }
+
+        bool clearoradd = false;
+
+        if (startAd != nullptr && opt_->isFinite(startAd->cost) && opt_->isFinite(goalAd->cost))
+        {
+            if (isPathValid(startAd, goalAd))
+            {
+                bestStartMotion_ = startAd;
+                bestGoalMotion_ = goalAd;
+                solved_ = true;
+            }
+            else if (!checkedStartPath_.empty() && !checkedGoalPath_.empty())
+            {
+                bool locals = false, localg = false;
+                localInfeasible(tree_, locals, localg);
+
+                if (tree_ == 0)
+                {
+                    if (!goalAdInfSamplers_.empty())
+                    {
+                        clearoradd = true;
+                        clearGoalAdInfSampler();
+                    }
+                    calculateInfSampler(locals, true, clearoradd);
+                }
+                else if (tree_ == 1)
+                {
+                    if (!startAdInfSamplers_.empty())
+                    {
+                        clearoradd = true;
+                        clearStartAdInfSampler();
+                    }
+                    calculateInfSampler(localg, false, clearoradd);
+                }
+                else 
+                {
+                    calculateInfSampler(locals, true, clearoradd);
+                    calculateInfSampler(localg, false, clearoradd);
+                }
+            }
+        }
+
+        if (!solved_)
+        {
+            for (auto & pair : connectionPoint_)
+            {
+                if (opt_->isFinite(pair.first->cost) && opt_->isFinite(pair.second->cost))
+                {
+                    if (isPathValid(pair.first, pair.second))
+                    {
+                        bestStartMotion_ = pair.first;
+                        bestGoalMotion_ = pair.second;
+
+                        solved_ = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (solved_)
+        {
+            bestCost_ = opt_->combineCosts(bestStartMotion_->cost, bestGoalMotion_->cost);
+            break;
+        }
+
+        processAdEllipsoidRind(clearoradd, ais, adinfcount);
+
+        if (!ais) 
+        {
+            startAd = goalAd = nullptr;
+        }
+    }
+
+    if (solved_)
+    {
+        ptc.terminate();
+        processSolution(bestStartMotion_, bestGoalMotion_);
+    }
+
+    OMPL_INFORM("%s: Created %u states (%u start + %u goal).", getName().c_str(), tStart_->size() + tGoal_->size(),
+                tStart_->size(), tGoal_->size());
+
+    return solved_ ? base::PlannerStatus::EXACT_SOLUTION : base::PlannerStatus::TIMEOUT;
+}

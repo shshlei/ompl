@@ -98,6 +98,11 @@ namespace ompl
                 type_ = STATE_SPACE_REEDS_SHEPP;
             }
 
+            void setTurningRadius(double turningRadius)
+            {
+                rho_ = turningRadius;
+            }
+
             double distance(const State *state1, const State *state2) const override;
 
             void interpolate(const State *from, const State *to, double t, State *state) const override;
@@ -139,8 +144,8 @@ namespace ompl
                 defaultSettings();
             }
             ~ReedsSheppMotionValidator() override = default;
-            bool checkMotion(const State *s1, const State *s2) const override;
-            bool checkMotion(const State *s1, const State *s2, std::pair<State *, double> &lastValid) const override;
+            bool checkMotion(const State *s1, const State *s2, bool s2Valid = false) const override;
+            bool checkMotion(const State *s1, const State *s2, std::pair<State *, double> &lastValid, bool s2Valid = false) const override;
 
         private:
             ReedsSheppStateSpace *stateSpace_;

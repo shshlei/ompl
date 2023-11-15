@@ -157,6 +157,11 @@ namespace ompl
                 return samplers_[index]->getLocalSeed();
             }
 
+            const StateSamplerPtr getStateSampler(const unsigned int index) const
+            {
+                return samplers_[index];
+            }
+
         protected:
             /** \brief The samplers that are composed */
             std::vector<StateSamplerPtr> samplers_;

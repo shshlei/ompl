@@ -42,7 +42,7 @@
 
 #include "ompl/datastructures/NearestNeighbors.h"
 #include "ompl/datastructures/BinaryHeap.h"
-#include "ompl/datastructures/GridN.h"
+#include "ompl/datastructures/GridNR.h"
 #include "ompl/datastructures/Grid.h"
 #include "ompl/datastructures/PDF.h"
 
@@ -106,22 +106,8 @@ namespace ompl
                 return penDistance_;
             }
 
-            void setLazyPath(bool lazy)
-            {
-                lazyPath_ = lazy;
-                if (!lazyPath_)
-                    lazyNode_ = false;
-            }
-
-            bool getLazyPath() const
-            {
-                return lazyPath_;
-            }
-
             void setLazyNode(bool lazy)
             {
-                if (lazy)
-                    lazyPath_ = true;
                 lazyNode_ = lazy;
             }
 
@@ -152,44 +138,12 @@ namespace ompl
 
             void setUseBispace(bool bispace)
             {
-                if (!bispace)
-                    treatedAsMultiSubapce_ = false;
                 useBispace_ = bispace;
             }
 
             bool getUseBispace() const
             {
                 return useBispace_;
-            }
-
-            void setUseBiasGrow(bool use)
-            {
-                useBiasGrow_ = use;
-                if (!useBispace_ && use)
-                {
-                    OMPL_WARN("%s: The bias grow feature is not usable since the bispace feature is not set.", getName().c_str());
-                    useBiasGrow_ = false;
-                }
-            }
-
-            bool getUseBiasGrow() const
-            {
-                return useBiasGrow_;
-            }
-
-            void setTreatedAsMultiSubapce(bool sub)
-            {
-                treatedAsMultiSubapce_ = sub;
-                if (!useBispace_ && sub)
-                {
-                    OMPL_WARN("%s: The treate as multisubspace feature is not usable since the bispace feature is not set.", getName().c_str());
-                    treatedAsMultiSubapce_ = false;
-                }
-            }
-
-            bool getTreatedAsMultiSubapce() const
-            {
-                return treatedAsMultiSubapce_;
             }
 
             void setPruneThreshold(const double pp)
@@ -285,7 +239,7 @@ namespace ompl
                 std::size_t disabled{0};
             };
 
-            using CellDiscretizationData = GridN<CellData *>;
+            using CellDiscretizationData = GridNR<CellData *>;
             using Cell = CellDiscretizationData::Cell;
             using Coord = CellDiscretizationData::Coord;
 
@@ -641,8 +595,6 @@ namespace ompl
 
             double maxInvalidNodeRatio_{0.1};
 
-            bool lazyPath_{true};
-
             bool lazyNode_{true};
 
             bool addIntermediateState_{true};
@@ -666,7 +618,7 @@ namespace ompl
             ////////////////////////////////////////////////////////////////////////////////////////////////////
             // optimal 
             /** \brief Check if a better path is found */
-            bool findBetterSolution(bool &optimal, double &ratio1, double &maxratio1, unsigned int &connect1, double &connectTresh1);
+            bool findBetterSolution(bool &optimal);
 
             void rewirePath();
 
@@ -674,11 +626,6 @@ namespace ompl
 
             /** \brief Determine an improvement ratio that a found path's feasibility is rechecked */
             double improvementRatio(const base::Cost &temp, const base::State *sm, const base::State *gm) const;
-
-            /** \brief If lazy strategy is used, the feasibility of a new found path is only checked
-                if it is ratio1 better than the stored best path, or after connectTresh1 connection times */
-            bool checkPath(const base::Cost &temp, const base::Cost &best,
-                           double &ratio1, double &maxratio1, unsigned int &connect1, double &connectTresh1) const;
 
             /** \brief Prunes all those states which estimated total cost is higher than pruneTreeCost.
                 Returns the number of motions pruned. Depends on the parameter set by
@@ -707,9 +654,6 @@ namespace ompl
             /** \brief Check whether the given motion passes the specified cost threshold, meaning it will be \e kept
              * during pruning */
             bool keepCondition(Motion *motion, const base::Cost &threshold, bool start);
-
-            /** \brief Calculate the path cost to reach the bispace border */
-            base::Cost bordersolutionHeuristic(Motion *motion, bool start) const;
 
             bool keepCondition2(Motion *motion, const base::Cost &threshold, bool start) const;
 
@@ -746,80 +690,7 @@ namespace ompl
 
             ////////////////////////////////////////////////////////////////////////////////////////////////////
             // bispace 
-            struct MotionInfo;
-
-            using GridCell = Grid<MotionInfo>::Cell;
-
-            using CellPDF = PDF<GridCell *>;
-
-            struct MotionInfo
-            {
-                Motion *operator[](unsigned int i)
-                {
-                    return motions_[i];
-                }
-                std::vector<Motion *>::iterator begin()
-                {
-                    return motions_.begin();
-                }
-                std::vector<Motion *>::iterator end()
-                {
-                    return motions_.end();
-                }
-                std::vector<Motion *>::iterator erase(std::vector<Motion *>::iterator iter)
-                {
-                    std::vector<Motion *>::iterator it = motions_.erase(iter);
-                    return it;
-                }
-                void push_back(Motion *m)
-                {
-                    motions_.push_back(m);
-                }
-                void pop_back()
-                {
-                    motions_.pop_back();
-                }
-                std::size_t size() const
-                {
-                    return motions_.size();
-                }
-                bool empty() const
-                {
-                    return motions_.empty();
-                }
-
-                std::vector<Motion *> motions_;
-                CellPDF::Element *elem_;
-            };
-
-            struct MotionPDF
-            {
-                MotionPDF() = default;
-
-                Grid<MotionInfo> grid{0};
-
-                std::size_t size{0};
-
-                CellPDF pdf;
-            };
-
-            MotionPDF startBiasPdf_, goalBiasPdf_;
-
-            void addPdfMotion(MotionPDF &pdf, Motion *motion, bool start);
-
-            Motion *selectPdfMotion(MotionPDF &pdf, GridCell *&cell);
-
-            void removePdfMotion(MotionPDF &pdf, Motion *motion);
-
-            double startBiasProb_{0.0}, goalBiasProb_{0.0};
-
             bool useBispace_{true};
-
-            bool useBiasGrow_{false};
-
-            bool treatedAsMultiSubapce_{false};
-
-            std::vector<ompl::base::State *> startBiasStates_, goalBiasStates_;
 
 
             ////////////////////////////////////////////////////////////////////////////////////////////////////

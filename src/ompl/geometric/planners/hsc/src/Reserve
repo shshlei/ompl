@@ -1,0 +1,630 @@
+    auto csampler = static_cast<ompl::base::CompoundStateSampler *>(sampler_.get());
+//    rng_.setLocalSeed(74459601);
+//    csampler->setLocalSeed(221361370, 0); //todo
+//    csampler->setLocalSeed(453157302, 1);
+    OMPL_INFORM("rng seed %u", rng_.getLocalSeed());
+    OMPL_INFORM("Local seed_0 %u", csampler->getLocalSeed(0));
+    OMPL_INFORM("Local seed_1 %u", csampler->getLocalSeed(1));
+
+
+
+void ompl::geometric::LSCAI::exchangePath(TreeData &tree, TreeData &otherTree,
+                                         Motion *motion, Motion *otherMotion,
+                                         Motion *&motion1, Motion *&motion2, bool start)
+{
+    std::vector<Motion *> mpath;
+
+    if (start)
+    {
+        Motion *temp = motion;
+        while (temp != nullptr)
+        {
+            mpath.push_back(temp);
+            temp = temp->parent;
+        }
+
+        if (mpath.size() > 1)
+        {
+            Motion *last = mpath.back();
+            mpath.pop_back();
+
+            last->valid = true;
+            if (last->parent != nullptr)
+            {
+                removeFromParent(last);
+                last->parent = nullptr;
+            }
+            exchangeMotion(tree, otherTree, last, mpath, otherMotion, otherMotion->root);
+
+            motion2 = last;
+        }
+        else 
+        {
+            while (!motion->children.empty())
+            {
+                auto child = motion->children.back();
+                motion->children.pop_back();
+
+                removeFromTreeAddTreeChangeRoot(tree, otherTree, child, otherMotion->root);
+
+                connectToPmotion(child, otherMotion);
+                child->parent->children.push_back(child);
+            }
+
+            removeMotion(tree, motion);
+
+            motion2 = otherMotion;
+        }
+    }
+    else 
+    {
+        Motion *temp = otherMotion;
+        while (temp != nullptr)
+        {
+            mpath.push_back(temp);
+            temp = temp->parent;
+        }
+
+        if (mpath.size() > 1)
+        {
+            Motion *last = mpath.back();
+            mpath.pop_back();
+
+            last->valid = true;
+            if (last->parent != nullptr)
+            {
+                removeFromParent(last);
+                last->parent = nullptr;
+            }
+
+            exchangeMotion(otherTree, tree, last, mpath, motion, motion->root);
+            motion1 = last;
+        }
+        else 
+        {
+            while (!otherMotion->children.empty())
+            {
+                auto child = otherMotion->children.back();
+                otherMotion->children.pop_back();
+
+                removeFromTreeAddTreeChangeRoot(otherTree, tree, child, motion->root);
+
+                connectToPmotion(child, motion);
+                child->parent->children.push_back(child);
+            }
+
+            removeMotion(otherTree, otherMotion);
+            motion1 = motion;
+        }
+    }
+}
+
+void ompl::geometric::BiHSC::exchangeMotion(TreeData &tree, TreeData &otherTree, Motion *motion, std::vector<Motion *> &mpath,
+                                            Motion *connect, const base::State *root)
+{
+    //root parent children
+    removeFromTreeAddTreeChangeRoot(tree, otherTree, motion, root);
+
+    removeFromParent(motion);
+
+    for (auto & m: mpath)
+    {
+        removeFromParent(m);
+    }
+
+    Motion *last = mpath.front();
+    while (!last->children.empty())
+    {
+        Motion *child = last->children.back();
+        last->children.pop_back();
+        child->parent = connect;
+        child->incCost= opt_->motionCost(connect->state, child->state);
+        child->parent->children.push_back(child);
+    }
+
+    bool valid = last->valid;
+
+    otherTree->remove(last);
+    removeFromCertificate(last);
+    si_->freeState(last->state);
+    delete last;
+
+    mpath.erase(mpath.begin());
+
+    if (!mpath.empty())
+    {
+        last = mpath.back();
+        motion->parent = last;
+        motion->incCost= opt_->motionCost(last->state, motion->state);
+        motion->parent->children.push_back(motion);
+        motion->valid = last->valid;
+
+        if(mpath.size() > 1)
+        {
+            for (unsigned int i = mpath.size() - 1; i > 0; --i)
+            {
+                mpath[i]->parent = mpath[i-1];
+                mpath[i]->incCost= opt_->motionCost(mpath[i-1]->state, mpath[i]->state);
+                mpath[i]->parent->children.push_back(mpath[i]);
+                mpath[i]->valid = mpath[i-1]->valid;
+            }
+        }
+
+        last = mpath.front();
+        last->parent = connect;
+        last->incCost= opt_->motionCost(connect->state, last->state);
+        last->parent->children.push_back(last);
+        last->valid = valid;
+    }
+    else 
+    {
+        motion->parent = connect;
+        motion->incCost= opt_->motionCost(connect->state, motion->state);
+        motion->parent->children.push_back(motion);
+        motion->valid = valid;
+    }
+
+    updateChildCosts(connect);
+}
+
+void ompl::geometric::BiHSC::removeFromTreeAddTreeChangeRoot(TreeData &tree, TreeData &otherTree, Motion *motion, const base::State *root)
+{
+    tree->remove(motion);
+    motion->root = root;
+    otherTree->add(motion);
+
+    /* remove children */
+    for (auto & i : motion->children)
+    {
+        removeFromTreeAddTreeChangeRoot(tree, otherTree, i, root);
+    }
+}
+
+void ompl::geometric::BiHSC::removeInefficientSc(Motion *motion)
+{
+    if (motion->sc != nullptr)
+    {
+        SafetyCertificate *sc = motion->sc;
+
+        std::vector<Motion *> removes;
+        for (unsigned int i = 0; i < sc->objects.size(); i+=3)
+        {
+            Motion *child = sc->objects[i];
+            if (child != motion && !child->onpath && !child->stateValid)
+            {
+                if (isValid(child))
+                {
+                    sc->sc->valid_++;
+                }
+                else 
+                {
+                    sc->sc->invalid_++;
+                    removes.push_back(child);
+                }
+            }
+        }
+
+        for (auto & child : removes)
+        {
+            if (child->root == rootNullStart_ || child->root == rootNullGoal_)
+            {
+                pnullProcess(child);
+
+                if (child->root == rootNullStart_)
+                {
+                    tNullStart_->remove(child);
+                }
+                else 
+                {
+                    tNullGoal_->remove(child);
+                }
+
+                removeFromParent(child);
+
+                removeFromCertificate(child);
+
+                si_->freeState(child->state);
+                delete child;
+            }
+            else 
+            {
+                bool st = false;
+                for (auto & startMotion : startMotions_)
+                {
+                    if (child->root == startMotion->root)
+                    {
+                        st = true;
+                        break;
+                    }
+                }
+            
+                removeOneMotion(child, st);
+            }
+        }
+
+        double total = (double)(sc->sc->valid_ + sc->sc->invalid_);
+
+        if (sscs_->size() > 1 && total >= 10 && (double)(sc->sc->valid_ + 1) / total <= 0.1)
+        {
+            removes.clear();
+            for (unsigned int i = 0; i < sc->objects.size(); i++)
+            {
+                Motion *child = sc->objects[i];
+                if (child != motion && !child->onpath && !child->stateValid)
+                {
+                    if (isValid(child))
+                    {
+                        sc->sc->valid_++;
+                    }
+                    else 
+                    {
+                        sc->sc->invalid_++;
+                        removes.push_back(child);
+                    }
+                }
+            }
+
+            for (auto & child : removes)
+            {
+                if (child->root == rootNullStart_ || child->root == rootNullGoal_)
+                {
+                    pnullProcess(child);
+
+                    if (child->root == rootNullStart_)
+                    {
+                        tNullStart_->remove(child);
+                    }
+                    else 
+                    {
+                        tNullGoal_->remove(child);
+                    }
+
+                    removeFromParent(child);
+
+                    removeFromCertificate(child);
+
+                    si_->freeState(child->state);
+                    delete child;
+                }
+                else 
+                {
+                    bool st = false;
+                    for (auto & startMotion : startMotions_)
+                    {
+                        if (child->root == startMotion->root)
+                        {
+                            st = true;
+                            break;
+                        }
+                    }
+                
+                    removeOneMotion(child, st);
+                }
+            }
+
+            if ((double)(sc->sc->valid_ + 1) / total <= 0.1)
+            {
+                base::SafetyCertificate *sctemp = sc->sc;
+
+                sscs_->remove(sc);
+
+                snn_->remove(sctemp);
+
+                if (sctemp->state != nullptr)
+                    si_->freeState(sctemp->state);
+                if (sctemp->contact != nullptr)
+                    delete sctemp->contact;
+                if (!sctemp->estates_.empty())
+                {
+                    for (auto & state : sctemp->estates_)
+                        si_->freeState(state);
+                    sctemp->estates_.clear();
+                    sctemp->erange_.clear();
+                }
+                delete sctemp;
+
+                for (auto & child : sc->objects)
+                    child->sc = nullptr;
+
+                delete sc;
+            }
+        }
+    }
+}
+
+bool ompl::geometric::BiHSC::checkIfChild(Motion *motion, Motion *check)
+{
+    bool child = false;
+
+    if (check == motion)
+        child = true;
+
+    if (!child)
+    {
+        Motion *temp = check->parent;
+        while (temp != nullptr)
+        {
+            if (temp == motion)
+            {
+                child = true;
+                break;
+            }
+
+            temp = temp->parent;
+        }
+    }
+
+    return child;
+}
+
+bool ompl::geometric::BiHSC::checkIfIn(std::vector<Motion *> motions, Motion *motion, unsigned int &ind)
+{
+    bool in = false;
+    ind = 0;
+
+    for (auto & m : motions)
+    {
+        if (m == motion)
+        {
+            in = true;
+            break;
+        }
+        ++ind;
+    }
+
+    return in;
+}
+
+bool ompl::geometric::BiHSC::checkFromRoot(Motion *motion, unsigned int &segment)
+{
+    segment = 0;
+
+    Motion *temp = motion;
+
+    while (temp->parent != nullptr)
+    {
+        segment++;
+        temp = temp->parent;
+    }
+
+    if (temp->state == temp->root)
+        return true;
+    else 
+        return false;
+}
+
+void ompl::geometric::BiHSC::connectToPmotion(Motion *motion, Motion *pmotion)
+{
+    motion->parent = pmotion;
+    motion->root = motion->parent->root;
+    motion->incCost = opt_->motionCost(motion->parent->state, motion->state);
+    motion->cost = opt_->combineCosts(motion->parent->cost, motion->incCost);
+
+    updateChildCosts(motion);
+}
+
+
+void ompl::geometric::BiHSC::removeMotion(TreeData &tree, Motion *motion)
+{
+    tree->remove(motion);
+
+    removeFromParent(motion);
+
+    removeFromCertificate(motion);
+
+    /* remove children */
+    for (auto & i : motion->children)
+    {
+        i->parent = nullptr;
+        removeMotion(tree, i);
+    }
+
+    si_->freeState(motion->state);
+    delete motion;
+}
+
+
+void ompl::geometric::BiHSC::pnullProcess(Motion *motion)
+{
+    while (!motion->children.empty())
+    {
+        Motion *child = motion->children.back();
+        motion->children.pop_back();
+
+        child->parent = nullptr;
+        setMotionInfinityCost(child);
+    }
+}
+
+// check
+bool ompl::geometric::BiHSC::isValid(Motion *motion)
+{
+    time::point starto = time::now();
+
+    if (!motion->stateValid)
+    {
+        base::SafetyCertificate *sc = new base::SafetyCertificate(si_);
+        si_->copyState(sc->state, motion->state);
+
+        bool valid = true;
+
+        bool osc = false;
+
+        if (onn_->size() > oscNum_)
+        {
+            base::SafetyCertificate *fcsc;
+
+            std::vector<base::SafetyCertificate *> nsc;
+
+            nsc.push_back(onn_->nearest(sc));
+
+            collisionCertificateChecker_(sc->state, nsc, osc, fcsc);
+
+            if (osc)
+            {
+                si_->freeState(sc->state);
+                delete sc->contact;
+                delete sc;
+
+                valid = false;
+                if (motion->sc != nullptr)
+                    motion->sc->sc->invalid_++;
+            }
+        }
+
+        if (!osc)
+        {
+            double dist = 0.0;
+            if (!si_->isValid(sc->state, *sc->contact, dist)) //todo
+            {
+                valid = false;
+                if (motion->sc != nullptr)
+                    motion->sc->sc->invalid_++;
+
+                onn_->add(sc);
+            }
+            else 
+            {
+                motion->stateValid = true;
+
+                si_->freeState(sc->state);
+                delete sc->contact;
+                delete sc;
+
+                if (motion->sc != nullptr)
+                {
+                    motion->sc->sc->valid_++;
+                    motion->sc->sc->cdist_ = std::max(motion->sc->sc->cdist_, si_->distance(motion->sc->sc->state, motion->state));
+                }
+//                else 
+//                {
+//                    SafetyCertificate *ssc = new SafetyCertificate();
+//                    motion->sc = ssc;
+//                    motion->sc->sc = sc;
+//                    motion->sc->sc->valid_++;
+//                    motion->sc->objects.push_back(motion);
+//                    sscs_->add(ssc);
+//                    sc->confidence_ = confidence_;
+//                    snn_->add(sc);
+//                    delete sc->contact;
+//                    sc->contact = nullptr;
+//                }
+            }
+        }
+
+        if (!valid && motion->sc != nullptr && motion->sc->sc->lockConfidence_)
+        {
+            sc = motion->sc->sc;
+            bool add = false;
+
+            if (!sc->estates_.empty())
+            {
+                double dist = std::numeric_limits<double>::infinity();
+                unsigned int best = 0;
+                for (unsigned int i = 0; i < sc->estates_.size(); i++)
+                {
+                    double tempd = si_->distance(sc->estates_[i], motion->state);
+                    if (tempd < dist)
+                    {
+                        dist = tempd;
+                        best = i;
+                    }
+                }
+
+                if (dist > sc->erange_[best])
+                {
+                    if (sc->estates_.size() < 10)
+                        add = true;
+                    else 
+                    {
+                        if (1.05 * dist >= std::pow(0.25, 1 / (double)(si_->getStateDimension())) * si_->distance(sc->estates_[best], sc->state))
+                            add = true;
+                        else
+                        {
+                            sc->erange_[best] = 1.05 * dist;
+
+                            auto bestm = sc->estates_[best];
+                            double bestd = sc->erange_[best];
+
+                            unsigned int iter = 0;
+                            for (auto it = sc->estates_.begin(); it != sc->estates_.end();)
+                            {
+                                auto m = *it;
+                                if (m == bestm)
+                                {
+                                    ++it;
+                                    ++iter;
+                                    continue;
+                                }
+
+                                if (si_->distance(bestm, m) <= bestd)
+                                {
+                                    si_->freeState(*it);
+                                    it = sc->estates_.erase(it);
+                                    sc->erange_.erase(sc->erange_.begin() + iter);
+                                }
+                                else 
+                                {
+                                    ++it;
+                                    ++iter;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            else 
+                add = true;
+
+            if (add)
+            {
+                double d1 = std::pow(0.25, 1 / (double)(si_->getStateDimension())) * si_->distance(sc->state, motion->state);
+                double d2 = (sc->cdist_ != 0 ? std::pow(0.07, 1 / (double)(si_->getStateDimension())) * sc->cdist_ : std::numeric_limits<double>::infinity());
+                double erange = std::min(d1, d2);
+                sc->erange_.push_back(erange);
+
+                base::State *estate = si_->allocState();
+                si_->copyState(estate, motion->state);
+                sc->estates_.push_back(estate);
+            }
+        }
+
+        checkTime_ += time::seconds(time::now() - starto);
+
+        return valid;       
+    }
+    else
+        return true;
+}
+
+bool ompl::geometric::BiHSC::checkStartMotion(Motion *motion1, Motion *motion2)
+{
+    if (!motion2->valid)
+    {
+        if (checkInterMotion(motion1, motion2))
+        {
+            motion2->valid = true;
+            return true;
+        }
+        else 
+            return false;
+    }
+    else 
+        return true;
+}
+
+bool ompl::geometric::BiHSC::checkGoalMotion(Motion *motion1, Motion *motion2)
+{
+    if (!motion1->valid)
+    {
+        if (checkInterMotion(motion1, motion2))
+        {
+            motion1->valid = true;
+            return true;
+        }
+        else 
+            return false;
+    }
+    else 
+        return true;
+}

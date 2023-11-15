@@ -58,6 +58,7 @@ ompl::geometric::BiASEstar::BiASEstar(const base::SpaceInformationPtr &si) : bas
     Planner::declareParam<double>("pen_distance", this, &BiASEstar::setPenDistance, &BiASEstar::getPenDistance, "0.:0.1:10000.");
 //    Planner::declareParam<bool>("use_bispace", this, &BiASEstar::setUseBispace, &BiASEstar::getUseBispace, "0,1");
     Planner::declareParam<double>("prune_threshold", this, &BiASEstar::setPruneThreshold, &BiASEstar::getPruneThreshold, "0.:.01:1.");
+    Planner::declareParam<bool>("update_nbhcell", this, &BiASEstar::setUpdateNbCell, &BiASEstar::getUpdateNbCell, "0,1");
 
     addPlannerProgressProperty("iterations INTEGER", [this] { return numIterationsProperty(); });
     addPlannerProgressProperty("best cost REAL", [this] { return bestCostProperty(); });
@@ -101,8 +102,6 @@ void ompl::geometric::BiASEstar::setup()
     sc.configureProjectionEvaluator(projectionEvaluator_);
     dStart_.setDimension(projectionEvaluator_->getDimension());
     dGoal_.setDimension(projectionEvaluator_->getDimension());
-    dStart_.useNeighbor(false);
-    dGoal_.useNeighbor(false);
     dStart_.setNeighborCell(2);
     dGoal_.setNeighborCell(2);
     dStart_.setMaxNeighborCell(4);
@@ -138,6 +137,8 @@ void ompl::geometric::BiASEstar::setup()
             opt_ = std::make_shared<base::PathLengthOptimizationObjective>(si_);
             pdef_->setOptimizationObjective(opt_);
         }
+        currentStartCost_ = opt_->infiniteCost();
+        currentGoalCost_ = opt_->infiniteCost();
         bestCost_ = opt_->infiniteCost();
         prunedCost_ = opt_->infiniteCost();
         mc_ = MotionCompare(opt_);
@@ -232,19 +233,19 @@ void ompl::geometric::BiASEstar::clear()
 
     iterations_ = 0;
     prunedCost_ = base::Cost(std::numeric_limits<double>::quiet_NaN());
+    currentStartCost_ = base::Cost(std::numeric_limits<double>::quiet_NaN());
+    currentGoalCost_ = base::Cost(std::numeric_limits<double>::quiet_NaN());
 
     clearStartAdInfSampler();
     clearGoalAdInfSampler();
-    startAdInfProb_ = 0.0;
     tree_ = -1;
     localRatio_ = 0.75;
 
     clearStartInfSampler();
     clearGoalInfSampler();
-    startInfProb_ = 0.0;
     guniform_ = true;
 
-    growTime_ = pathTime_ = 0.0;
+    adinfcount_ = infcount_ = 0;
 }
 
 ompl::base::PlannerStatus ompl::geometric::BiASEstar::solve(const base::PlannerTerminationCondition &ptc)
@@ -267,11 +268,7 @@ ompl::base::PlannerStatus ompl::geometric::BiASEstar::solve(const base::PlannerT
     bool startTree = true;
     bool optimal = false;
 
-    unsigned int connect1 = 0;
-    double ratio1 = 0.5, maxratio1 = 0.0, connectTresh1 = 10.0;
-
     Motion *startAd = nullptr, *goalAd = nullptr;
-    unsigned int adinfcount = 0, infcount = 0;
     bool ais = false;
     bool adinf = true;
     bool reverse = false;
@@ -305,7 +302,7 @@ ompl::base::PlannerStatus ompl::geometric::BiASEstar::solve(const base::PlannerT
         if (!batchGrow(startTree, ais, adinf))
             continue;
 
-        if (!startAd)
+        if (!solved_ && !startAd)
         {
             std::size_t index = 0;
             if (selectCMotion(index, reverse))
@@ -317,7 +314,7 @@ ompl::base::PlannerStatus ompl::geometric::BiASEstar::solve(const base::PlannerT
         }
 
         bool ad = false, clearoradd = false;
-        bool updatedSolution = findBetterSolution(startAd, goalAd, ad, ais, clearoradd, optimal, ratio1, maxratio1, connect1, connectTresh1);
+        bool updatedSolution = findBetterSolution(startAd, goalAd, ad, ais, clearoradd, optimal);
         if (optimal)
             break;
         if (ad)
@@ -329,73 +326,44 @@ ompl::base::PlannerStatus ompl::geometric::BiASEstar::solve(const base::PlannerT
             goalAd = nullptr;
 
             tree_ = -1;
-            adinfcount = 0;
-            startAdInfProb_ = -1.0;
+            adinfcount_ = 0;
             clearStartAdInfSampler();
             clearGoalAdInfSampler();
         }
             
         if (updatedSolution)
         {
+            if (startAd && !(keepCondition(startAd, bestCost_, true) && keepCondition(goalAd, bestCost_, false)))
+            {
+                clearoradd = false;
+
+                ais = false;
+                startAd = nullptr;
+                goalAd = nullptr;
+
+                tree_ = -1;
+                adinfcount_ = 0;
+                clearStartAdInfSampler();
+                clearGoalAdInfSampler();
+            }
+            int numPruned = pruneTree(bestCost_);
+            if (0)
+                OMPL_INFORM("%s: %u states are pruned from the tree, %u states are left", getName().c_str(), numPruned, tStart_->size() + tGoal_->size());
             if (opt_->isFinite(bestStartMotion_->cost) && opt_->isFinite(bestGoalMotion_->cost))
             {
                 reportBetterSolution(intermediateSolutionCallback);
-
-                Motion *rtSt = nullptr, *rtG = nullptr;
-                for (auto & stMotion : startMotions_)
-                {
-                    if (stMotion->root == bestStartMotion_->root)
-                    {
-                        rtSt = stMotion;
-                        break;
-                    }
-                }
-                for (auto & gMotion : goalMotions_)
-                {
-                    if (gMotion->root == bestGoalMotion_->root)
-                    {
-                        rtG = gMotion;
-                        break;
-                    }
-                }
-
-                clearStartInfSampler();
-                clearGoalInfSampler();
-                optimalInfSampler(rtSt, bestStartMotion_, true, startInfSamplers_);
-                optimalInfSampler(rtG,  bestGoalMotion_, false, goalInfSamplers_);
-                calculateOptimalInfProb();
-                if (startAd && !(keepCondition(startAd, bestCost_, true) && keepCondition(goalAd, bestCost_, false)))
-                {
-                    clearoradd = false;
-
-                    ais = false;
-                    startAd = nullptr;
-                    goalAd = nullptr;
-
-                    tree_ = -1;
-                    adinfcount = 0;
-                    startAdInfProb_ = -1.0;
-                    clearStartAdInfSampler();
-                    clearGoalAdInfSampler();
-                }
-
-                int numPruned = pruneTree(bestCost_);
-                if (0)
-                    OMPL_INFORM("%s: %u states are pruned from the tree, %u states are left", getName().c_str(), numPruned, tStart_->size() + tGoal_->size());
-                infcount = 0;
             }
         }
         else if (solved_)
         {
-            infcount++;
-            if (infcount == 100u) // todo
+            if (infcount_ >= 50u) // todo
             {
+                infcount_ = 0;
                 clearStartInfSampler();
                 clearGoalInfSampler();
-                startInfProb_ = -1.0;
             }
             /*
-            else if (infcount == 50u) // todo
+            else if (infcount_ == 50u) // todo
             {
                 double measure = 0.0;
                 for (auto & sampler : startInfSamplers_)
@@ -432,7 +400,7 @@ ompl::base::PlannerStatus ompl::geometric::BiASEstar::solve(const base::PlannerT
             */
         }
 
-        processAdEllipsoidRind(clearoradd, ais, adinfcount);
+        processAdEllipsoidRind(clearoradd, ais);
         if (!ais)
             startAd = goalAd = nullptr;
     }
@@ -447,11 +415,11 @@ ompl::base::PlannerStatus ompl::geometric::BiASEstar::solve(const base::PlannerT
 
     OMPL_INFORM("%s: Created %u states (%u start + %u goal). Final solution cost %.5f", getName().c_str(), tStart_->size() + tGoal_->size(),
                 tStart_->size(), tGoal_->size(), bestCost_.value());
-    OMPL_INFORM("%s: GrowTime %.4f, PathTime %.4f.", getName().c_str(), growTime_, pathTime_);
 
     return (solved_ || optimal) ? base::PlannerStatus::EXACT_SOLUTION : base::PlannerStatus::TIMEOUT;
 }
 
+// grow
 ompl::base::PlannerStatus ompl::geometric::BiASEstar::prepareSolve(const base::PlannerTerminationCondition &ptc)
 {
     checkValidity();
@@ -739,7 +707,7 @@ bool ompl::geometric::BiASEstar::growTreeSingleSpace(TreeGrowingInfo &tgi, Motio
         {
             if (!motion->cell->data->cmotion || opt_->isCostBetterThan(motion->cost, motion->cell->data->cmotion->cost))
                 motion->cell->data->cmotion = motion;
-            if (!motion->cell->data->mmotion || !opt_->isCostBetterThan(motion->cost, motion->cell->data->mmotion->cost))
+            if (!motion->cell->data->mmotion || opt_->isCostBetterThan(motion->cell->data->mmotion->cost, motion->cost))
                 motion->cell->data->mmotion = motion;
         }
         if (!solved_)
@@ -957,7 +925,7 @@ bool ompl::geometric::BiASEstar::growTreeMultiSpace(TreeGrowingInfo &tgi, Motion
         {
             if (!motion->cell->data->cmotion || opt_->isCostBetterThan(motion->cost, motion->cell->data->cmotion->cost))
                 motion->cell->data->cmotion = motion;
-            if (!motion->cell->data->mmotion || !opt_->isCostBetterThan(motion->cost, motion->cell->data->mmotion->cost))
+            if (!motion->cell->data->mmotion || opt_->isCostBetterThan(motion->cell->data->mmotion->cost, motion->cost))
                 motion->cell->data->mmotion = motion;
         }
         if (!solved_)
@@ -1274,14 +1242,15 @@ bool ompl::geometric::BiASEstar::backPathRewireMotion(Motion *motion, bool start
     OrderCellsByCost ocbc(opt_);
     CostMotionCompare compareFn(motion, opt_, start);
     CellDiscretizationData &disc = start ? dStart_ : dGoal_;
-    for (auto & cv : motion->cell->nbh)
+    std::size_t cnbh = motion->cell->nbh.size();
+    for (std::size_t cindex = 0; cindex < cnbh; cindex++)
     {
-        std::size_t numc = cv.size(), ic = numc - 1;
+        std::size_t numc = motion->cell->nbh[cindex].size(), ic = numc - 1;
         while (ic < numc)
         {
             if (ic)
-                std::sort(cv.begin(), cv.begin() + ic + 1, ocbc);
-            Cell *c = cv[ic];
+                std::sort(motion->cell->nbh[cindex].begin(), motion->cell->nbh[cindex].begin() + ic + 1, ocbc);
+            Cell *c = motion->cell->nbh[cindex][ic];
             ic--;
             std::size_t num = c->data->motions.size() - c->data->disabled;
             if (!num)
@@ -1313,8 +1282,6 @@ bool ompl::geometric::BiASEstar::backPathRewireMotion(Motion *motion, bool start
             }
             for (auto & nb : nbh)
             {
-                if (!opt_->isFinite(nb->cost))
-                    continue;
                 if (isInvalidNeighbor(motion, nb))
                     continue;
                 if (!isValidNeighbor(motion, nb))
@@ -1322,7 +1289,8 @@ bool ompl::geometric::BiASEstar::backPathRewireMotion(Motion *motion, bool start
                     if (checkInterMotion(nb, motion, start))
                     {
                         insertNeighbor(nb, motion);
-                        disc.updateNbh(nb->cell, motion->cell); // todo
+                        if (updateNbCell_)
+                            disc.updateNbh(nb->cell, motion->cell);
                     }
                     else
                     {
@@ -1420,7 +1388,7 @@ void ompl::geometric::BiASEstar::enableMotionInDisc(Motion *motion)
     {
         if (!motion->cell->data->cmotion || opt_->isCostBetterThan(motion->cost, motion->cell->data->cmotion->cost))
             motion->cell->data->cmotion = motion;
-        if (!motion->cell->data->mmotion || !opt_->isCostBetterThan(motion->cost, motion->cell->data->mmotion->cost))
+        if (!motion->cell->data->mmotion || opt_->isCostBetterThan(motion->cell->data->mmotion->cost, motion->cost))
             motion->cell->data->mmotion = motion;
     }
     for (auto & child : motion->children)
@@ -1600,7 +1568,8 @@ bool ompl::geometric::BiASEstar::checkMotion(Motion *pmotion, Motion *motion, bo
             motion->valid = true;
             insertNeighbor(pmotion, motion);
             CellDiscretizationData &disc = start ? dStart_ : dGoal_;
-            disc.updateNbh(pmotion->cell, motion->cell);
+            if (updateNbCell_)
+                disc.updateNbh(pmotion->cell, motion->cell);
         }
     }
     return motion->valid;
@@ -1638,7 +1607,7 @@ bool ompl::geometric::BiASEstar::checkInterMotion1(Motion *smotion, Motion *gmot
             }
             ratio += delta;
         }
-        if (!valid && addIntermediateState_ && ratio * dist > 0.25 * maxDistance_)
+        if (!valid && addIntermediateState_ && ratio > 0.5 && ratio * dist > 0.25 * maxDistance_)
         {
             ratio -= delta;
             Motion *last = new Motion(si_);
@@ -1672,7 +1641,7 @@ bool ompl::geometric::BiASEstar::checkInterMotion2(Motion *smotion, Motion *gmot
             }
             ratio -= delta;
         }
-        if (!valid && addIntermediateState_ && ratio * dist < 0.75 * maxDistance_)
+        if (!valid && addIntermediateState_ && ratio < 0.5 && (1.0 - ratio) * dist > 0.25 * maxDistance_)
         {
             ratio += delta;
             Motion *last = new Motion(si_);
@@ -1699,11 +1668,12 @@ void ompl::geometric::BiASEstar::addIntermediateMotion(Motion *pmotion, Motion *
     if (!opt_->isFinite(last->cost))
         last->cell->data->disabled++;
     insertNeighbor(last, pmotion);
-    disc.updateNbh(last->cell, pmotion->cell);
+    if (updateNbCell_)
+        disc.updateNbh(last->cell, pmotion->cell);
     insertInvalidNeighbor(last, motion);
     if (!last->cell->data->cmotion || opt_->isCostBetterThan(last->cost, last->cell->data->cmotion->cost))
         last->cell->data->cmotion = last;
-    if (!last->cell->data->mmotion || !opt_->isCostBetterThan(last->cost, last->cell->data->mmotion->cost))
+    if (!last->cell->data->mmotion || opt_->isCostBetterThan(last->cell->data->mmotion->cost, last->cost))
         last->cell->data->mmotion = last;
 }
 
@@ -1716,6 +1686,8 @@ void ompl::geometric::BiASEstar::getPlannerData(base::PlannerData &data) const
         tStart_->list(motions);
     for (auto & motion : motions)
     {
+        if (!opt_->isFinite(motion->cost))
+            continue;
         if (motion->parent == nullptr)
             data.addStartVertex(base::PlannerDataVertex(motion->state, 1));
         else
@@ -1729,6 +1701,8 @@ void ompl::geometric::BiASEstar::getPlannerData(base::PlannerData &data) const
         tGoal_->list(motions);
     for (auto & motion : motions)
     {
+        if (!opt_->isFinite(motion->cost))
+            continue;
         if (motion->parent == nullptr)
             data.addGoalVertex(base::PlannerDataVertex(motion->state, 2));
         else
@@ -1740,67 +1714,102 @@ void ompl::geometric::BiASEstar::getPlannerData(base::PlannerData &data) const
 }
 
 // optimal
-bool ompl::geometric::BiASEstar::findBetterSolution(Motion *startAd, Motion *goalAd, bool &ad, bool ais, bool &clearoradd, bool &optimal,
-                                            double &ratio1, double &maxratio1, unsigned int &connect1, double &connectTresh1)
+bool ompl::geometric::BiASEstar::findBetterSolution(Motion *startAd, Motion *goalAd, bool &ad, bool ais, bool &clearoradd, bool &optimal)
 {
     bool updatedSolution = false;
-    if (startAd && opt_->isFinite(startAd->cost) && opt_->isFinite(goalAd->cost))
+    if (startAd)
     {
-        if (isPathValid(startAd, goalAd))
+        base::Cost temp = opt_->combineCosts(startAd->cost, goalAd->cost);
+        if (opt_->isCostBetterThan(temp, bestCost_))
         {
-            base::Cost temp = opt_->combineCosts(startAd->cost, goalAd->cost);
-            if (opt_->isCostBetterThan(temp, bestCost_))
+            if (isPathValid(startAd, goalAd))
             {
-                double ratio = improvementRatio(temp, startAd->root, goalAd->root);
-                ratio1 = std::min(ratio, ratio1);
+                ad = true;
+                temp = opt_->combineCosts(startAd->cost, goalAd->cost);
+                if (opt_->isCostBetterThan(temp, bestCost_))
+                {
+                    bestCost_ = temp;
 
-                bestCost_ = temp;
-
-                if (solved_)
-                    OMPL_INFORM("%s: Found a better solution with a cost of %.2f in %u iterations (%u "
+                    if (solved_)
+                        OMPL_INFORM("%s: Found a better solution with a cost of %.2f in %u iterations (%u "
+                                "vertices in the graph, %u start + %u goal)",
+                                getName().c_str(), bestCost_.value(), iterations_, tStart_->size() + tGoal_->size(), tStart_->size(), tGoal_->size());
+                    else 
+                    {
+                        OMPL_INFORM("%s: Found an initial solution with a cost of %.2f in %u iterations (%u "
                                 "vertices in the graph)",
                                 getName().c_str(), bestCost_.value(), iterations_, tStart_->size() + tGoal_->size());
+                        for (auto & motion : startMotions_)
+                            optimalRewireTree(bh_, motion, true);
+                        for (auto & motion : goalMotions_)
+                            optimalRewireTree(bh_, motion, false);
+                        checkedStartPath_.clear();
+                        checkedGoalPath_.clear();
+                    }
+
+                    solved_ = true;
+                    updatedSolution = true;
+                    bestStartMotion_ = startAd;
+                    bestGoalMotion_ = goalAd;
+
+                    if (opt_->isSatisfied(bestCost_))
+                        optimal = true;
+                    else 
+                    {
+                        infcount_ = 0;
+                        clearStartInfSampler();
+                        clearGoalInfSampler();
+                        Motion *rtSt = nullptr, *rtG = nullptr;
+                        for (auto & stMotion : startMotions_)
+                        {
+                            if (stMotion->root == bestStartMotion_->root)
+                            {
+                                rtSt = stMotion;
+                                break;
+                            }
+                        }
+                        for (auto & gMotion : goalMotions_)
+                        {
+                            if (gMotion->root == bestGoalMotion_->root)
+                            {
+                                rtG = gMotion;
+                                break;
+                            }
+                        }
+                        optimalInfSampler(rtSt, bestStartMotion_, true, startInfSamplers_);
+                        optimalInfSampler(rtG,  bestGoalMotion_, false, goalInfSamplers_);
+                        calculateOptimalInfProb();
+                    }
+                }
+            }
+            else if (!ais && !checkedStartPath_.empty() && !checkedGoalPath_.empty())
+            {
+                adinfcount_ = 0;
+                bool locals = false, localg = false;
+                localInfeasible(tree_, locals, localg);
+                if (tree_ == 0)
+                {
+                    if (!goalAdInfSamplers_.empty())
+                    {
+                        clearoradd = true;
+                        clearGoalAdInfSampler();
+                    }
+                    calculateInfSampler(locals, true, clearoradd);
+                }
+                else if (tree_ == 1)
+                {
+                    if (!startAdInfSamplers_.empty())
+                    {
+                        clearoradd = true;
+                        clearStartAdInfSampler();
+                    }
+                    calculateInfSampler(localg, false, clearoradd);
+                }
                 else 
-                    OMPL_INFORM("%s: Found an initial solution with a cost of %.2f in %u iterations (%u "
-                                "vertices in the graph)",
-                                getName().c_str(), bestCost_.value(), iterations_, tStart_->size() + tGoal_->size());
-
-                solved_ = true;
-                updatedSolution = true;
-                bestStartMotion_ = startAd;
-                bestGoalMotion_ = goalAd;
-
-                if (opt_->isSatisfied(bestCost_))
-                    optimal = true;
-            }
-            ad = true;
-        }
-        else if (!ais && !checkedStartPath_.empty() && !checkedGoalPath_.empty())
-        {
-            bool locals = false, localg = false;
-            localInfeasible(tree_, locals, localg);
-            if (tree_ == 0)
-            {
-                if (!goalAdInfSamplers_.empty())
                 {
-                    clearoradd = true;
-                    clearGoalAdInfSampler();
+                    calculateInfSampler(locals, true, clearoradd);
+                    calculateInfSampler(localg, false, clearoradd);
                 }
-                calculateInfSampler(locals, true, clearoradd);
-            }
-            else if (tree_ == 1)
-            {
-                if (!startAdInfSamplers_.empty())
-                {
-                    clearoradd = true;
-                    clearStartAdInfSampler();
-                }
-                calculateInfSampler(localg, false, clearoradd);
-            }
-            else 
-            {
-                calculateInfSampler(locals, true, clearoradd);
-                calculateInfSampler(localg, false, clearoradd);
             }
         }
     }
@@ -1810,43 +1819,70 @@ bool ompl::geometric::BiASEstar::findBetterSolution(Motion *startAd, Motion *goa
         for (auto & pair : connectionPoint_)
         {
             base::Cost temp = opt_->combineCosts(pair.first->cost, pair.second->cost);
-            if (opt_->isFinite(temp) && opt_->isCostBetterThan(temp, bestCost_))
+            if (opt_->isCostBetterThan(temp, bestCost_))
             {
-                if (checkPath(temp, bestCost_, ratio1, maxratio1, connect1, connectTresh1))
+                if (isPathValid(pair.first, pair.second))
                 {
-                    if (isPathValid(pair.first, pair.second))
+                    temp = opt_->combineCosts(pair.first->cost, pair.second->cost);
+                    if (opt_->isCostBetterThan(temp, bestCost_))
                     {
-                        temp = opt_->combineCosts(pair.first->cost, pair.second->cost);
-                        if (opt_->isCostBetterThan(temp, bestCost_))
+                        bestCost_ = temp;
+                        if (solved_)
+                            OMPL_INFORM("%s: Found a better solution with a cost of %.2f in %u iterations (%u "
+                                    "vertices in the graph, %u start + %u goal)",
+                                    getName().c_str(), bestCost_.value(), iterations_, tStart_->size() + tGoal_->size(), tStart_->size(), tGoal_->size());
+                        else 
                         {
-                            bestCost_ = temp;
+                            OMPL_INFORM("%s: Found an initial solution with a cost of %.2f in %u iterations (%u "
+                                    "vertices in the graph)",
+                                    getName().c_str(), bestCost_.value(), iterations_, tStart_->size() + tGoal_->size());
+                            for (auto & motion : startMotions_)
+                                optimalRewireTree(bh_, motion, true);
+                            for (auto & motion : goalMotions_)
+                                optimalRewireTree(bh_, motion, false);
+                            checkedStartPath_.clear();
+                            checkedGoalPath_.clear();
+                        }
 
-                            double ratio = improvementRatio(temp, pair.first->root, pair.second->root);
-                            ratio1 = std::min(ratio, ratio1);
+                        solved_ = true;
+                        updatedSolution = true;
+                        bestStartMotion_ = pair.first;
+                        bestGoalMotion_ = pair.second;
 
-                            if (solved_)
-                                OMPL_INFORM("%s: Found a better solution with a cost of %.2f in %u iterations (%u "
-                                        "vertices in the graph)",
-                                        getName().c_str(), bestCost_.value(), iterations_, tStart_->size() + tGoal_->size());
-                            else 
-                                OMPL_INFORM("%s: Found an initial solution with a cost of %.2f in %u iterations (%u "
-                                        "vertices in the graph)",
-                                        getName().c_str(), bestCost_.value(), iterations_, tStart_->size() + tGoal_->size());
-
-                            solved_ = true;
-                            updatedSolution = true;
-                            bestStartMotion_ = pair.first;
-                            bestGoalMotion_ = pair.second;
-
-                            if (opt_->isSatisfied(bestCost_))
+                        if (opt_->isSatisfied(bestCost_))
+                        {
+                            optimal = true;
+                            break;
+                        }
+                        else 
+                        {
+                            infcount_ = 0;
+                            clearStartInfSampler();
+                            clearGoalInfSampler();
+                            Motion *rtSt = nullptr, *rtG = nullptr;
+                            for (auto & stMotion : startMotions_)
                             {
-                                optimal = true;
-                                break;
+                                if (stMotion->root == bestStartMotion_->root)
+                                {
+                                    rtSt = stMotion;
+                                    break;
+                                }
                             }
+                            for (auto & gMotion : goalMotions_)
+                            {
+                                if (gMotion->root == bestGoalMotion_->root)
+                                {
+                                    rtG = gMotion;
+                                    break;
+                                }
+                            }
+                            optimalInfSampler(rtSt, bestStartMotion_, true, startInfSamplers_);
+                            optimalInfSampler(rtG,  bestGoalMotion_, false, goalInfSamplers_);
+                            calculateOptimalInfProb();
                         }
                     }
-                    rewirePath(); // todo
                 }
+                //rewirePath(); // todo
             }
         }
     }
@@ -1854,7 +1890,7 @@ bool ompl::geometric::BiASEstar::findBetterSolution(Motion *startAd, Motion *goa
     return updatedSolution;
 }
 
-void ompl::geometric::BiASEstar::rewirePath()
+void ompl::geometric::BiASEstar::rewirePath() // todo update cmotion
 {
     {
         bool updated = false;
@@ -1983,41 +2019,6 @@ double ompl::geometric::BiASEstar::improvementRatio(const base::Cost &temp, cons
     return ratio;
 }
 
-bool ompl::geometric::BiASEstar::checkPath(const base::Cost &temp, const base::Cost &best,
-                                           double &ratio1, double &maxratio1, unsigned int &connect1, double &connectTresh1) const
-{
-    if (!solved_)
-        return true;
-    bool check = false;
-    double ratio = opt_->isFinite(best) ? std::abs((temp.value() - best.value()) / best.value()) : 2.0 * ratio1;
-    if (ratio >= ratio1) 
-    {
-        connect1 = 0;
-        maxratio1 = 0.0;
-        ratio1 = 0.35 * (ratio1 + ratio);
-        check = true;
-    }
-    else if (ratio > maxratio1)
-    {
-        maxratio1 = ratio;
-        connect1++;
-        if ((double)connect1 >= connectTresh1)
-        {
-            connect1 = 0;
-            connectTresh1 *= 0.9;
-            if (maxratio1 > 0.5 * ratio1)
-            {
-                ratio1 = 0.35 * (maxratio1 + ratio1);
-                maxratio1 = 0.0;
-                check = true;
-            }
-            else 
-                ratio1 *= 0.9;
-        }
-    }
-    return check;
-}
-
 void ompl::geometric::BiASEstar::optimalRewireTree(BinaryHeap<Motion *, MotionCompare> &bh, Motion *m, bool start)
 {
     std::vector<Motion *> &pnullMotions = start ? pnullStartMotions_ : pnullGoalMotions_;
@@ -2047,7 +2048,7 @@ void ompl::geometric::BiASEstar::optimalRewireTree(BinaryHeap<Motion *, MotionCo
                 }
                 for (auto & nb : c->data->motions)
                 {
-                    if (isInvalidNeighbor(motion, nb))
+                    if (motion == nb || isInvalidNeighbor(motion, nb))
                         continue;
                     Motion *pmotion = nullptr;
                     base::Cost nbhIncCost, nbhNewCost;
@@ -2597,8 +2598,6 @@ ompl::base::Cost ompl::geometric::BiASEstar::calculateCostToGo(Motion *motion, b
 // adaptive informed sampling
 bool ompl::geometric::BiASEstar::batchGrow(bool &startTree, bool ais, bool &adinf)
 {
-    time::point starto = time::now();
-
     bool add = false;
     TreeGrowingInfo tgi;
     tgi.xstate = si_->allocState();
@@ -2613,22 +2612,8 @@ bool ompl::geometric::BiASEstar::batchGrow(bool &startTree, bool ais, bool &adin
                 startTree = true;
             else if (tree_ == 1)
                 startTree = false;
-            else if (startAdInfProb_ > 0.0)
-            {
-                if (rng_.uniform01() < startAdInfProb_)
-                    startTree = true;
-                else 
-                    startTree = false;
-            }
             adinf = !adinf;
             ad = true;
-        }
-        else if (solved_ && startInfProb_ > 0.0) 
-        {
-            if (rng_.uniform01() < startInfProb_)
-                startTree = true;
-            else 
-                startTree = false;
         }
 
         tgi.start = startTree;
@@ -2641,6 +2626,13 @@ bool ompl::geometric::BiASEstar::batchGrow(bool &startTree, bool ais, bool &adin
         }
         else if (!sampleUniform(rstate, tgi.start))
             continue;
+        if (!guniform_)
+        {
+            if (ad)
+                adinfcount_++;
+            else
+                infcount_++;
+        }
 
         bool otherSide = false;
         bool change = false;
@@ -2708,32 +2700,26 @@ bool ompl::geometric::BiASEstar::batchGrow(bool &startTree, bool ais, bool &adin
 
     si_->freeState(tgi.xstate);
     freeMotion(rmotion);
-
-    growTime_ += time::seconds(time::now() - starto);
-
     return add;
 }
 
 bool ompl::geometric::BiASEstar::isPathValid(Motion *motion, Motion *otherMotion)
 {
-    time::point starto = time::now();
-
     bool valid = true;
+    currentStartCost_ = motion->cost;
+    currentGoalCost_  = otherMotion->cost;
     checkedStartPath_.clear();
     checkedGoalPath_.clear();
     if (!isPathValid(motion, true))
         valid = false;
     if (!isPathValid(otherMotion, false))
         valid = false;
-
-    pathTime_ += time::seconds(time::now() - starto);
-
     return valid;
 }
 
 bool ompl::geometric::BiASEstar::isPathValid(Motion *motion, bool start)
 {
-    bool valid = true, tvalid = true;
+    bool tvalid = true;
     std::vector<Motion *> mpath;
     std::vector<Motion *> &checkedPath = start ? checkedStartPath_ : checkedGoalPath_;
     while (motion)
@@ -2743,23 +2729,26 @@ bool ompl::geometric::BiASEstar::isPathValid(Motion *motion, bool start)
         motion = motion->parent;
     }
     mpath.pop_back();
+    base::Cost &currentCost = start ? currentStartCost_ : currentGoalCost_;
     std::vector<Motion *> &pnullMotions= start ? pnullStartMotions_: pnullGoalMotions_;
     for (std::size_t i = mpath.size() - 1; i < mpath.size(); i--)
     {
         motion = mpath[i];
         Motion *pmotion = motion->parent;
+        base::Cost cost = motion->cost;
         if (!checkMotion(pmotion, motion, start))
         {
             removeFromParent(motion);
             motion->parent = nullptr;
+            bool stop = false;
             if (tvalid)
             {
-                valid = false;
+                tvalid = false;
                 if (backRewire_)
                 {
                     Motion *ppmotion = nullptr;
-                    valid = backPathRewireMotion(motion, start, ppmotion);
-                    if (valid)
+                    tvalid = backPathRewireMotion(motion, start, ppmotion);
+                    if (tvalid)
                     {
                         checkedPath.resize(i+1);
                         Motion *last = ppmotion;
@@ -2768,12 +2757,18 @@ bool ompl::geometric::BiASEstar::isPathValid(Motion *motion, bool start)
                             checkedPath.push_back(last);
                             last = last->parent;
                         }
-                        valid = isPathValidInter(ppmotion, start);
+                        base::Cost nbhIncCost = start ? opt_->motionCost(ppmotion->state, motion->state) : opt_->motionCost(motion->state, ppmotion->state);
+                        base::Cost nbhNewCost = opt_->combineCosts(ppmotion->cost, nbhIncCost);
+                        currentCost = opt_->combineCosts(currentCost, base::Cost(nbhNewCost.value() - cost.value()));
+                        base::Cost temp = opt_->combineCosts(currentStartCost_, currentGoalCost_);
+                        if (!opt_->isCostBetterThan(temp, bestCost_))
+                            stop = true;
+                        else 
+                            tvalid = isPathValidInter(ppmotion, start);
                         connectToPmotion(motion, ppmotion, start);
                         motion->parent->children.push_back(motion); 
                     }
                 }
-                tvalid = valid;
             }
             if (tvalid)
                 enableMotionInDisc(motion);
@@ -2783,6 +2778,12 @@ bool ompl::geometric::BiASEstar::isPathValid(Motion *motion, bool start)
                 motion->valid = false;
                 motion->pmotion = pmotion;
                 motion->pmotion->pchildren.push_back(motion);
+            }
+            if (stop)
+            {
+                tvalid = false;
+                checkedPath.clear();
+                break;
             }
         }
     }
@@ -2847,7 +2848,7 @@ bool ompl::geometric::BiASEstar::selectCMotion(std::size_t &index, bool &reverse
     return nconnect;
 }
 
-void ompl::geometric::BiASEstar::processAdEllipsoidRind(bool clearoradd, bool &ais, unsigned int &adinfcount)
+void ompl::geometric::BiASEstar::processAdEllipsoidRind(bool clearoradd, bool &ais)
 {
     if (clearoradd)
     {
@@ -2859,20 +2860,19 @@ void ompl::geometric::BiASEstar::processAdEllipsoidRind(bool clearoradd, bool &a
 
         calculateInfProb(false);
         ais = true;
-        adinfcount = 0;
+        adinfcount_ = 0;
     }
     else if (ais)
     {
-        adinfcount++;
-        if (adinfcount == 100u) // todo
+        if (adinfcount_ >= 100u) // todo
         {
             clearStartAdInfSampler();
             clearGoalAdInfSampler();
             ais = false;
             tree_ = -1;
-            startAdInfProb_ = -1.0;
+            adinfcount_ = 0;
         }
-        else if (adinfcount == 50u) // todo
+        else if (adinfcount_ == 50u) // todo
         {
             double measure = 0.0;
             for (auto & sampler : startAdInfSamplers_)
@@ -3297,6 +3297,15 @@ void ompl::geometric::BiASEstar::goalLocalInfSampler(std::vector<base::AdInforme
     }
 }
 
+ompl::base::AdInformedSamplerPtr ompl::geometric::BiASEstar::allocInfSampler(const base::State *s1, const base::State *s2,
+                                                                       const base::Cost &minCost, const base::Cost &maxCost)
+{
+    if (useRejectionSampling_)
+        return std::make_shared<base::RejectionAdInfSampler>(pdef_, s1, s2, minCost, maxCost, numSampleAttempts_);
+    else 
+        return std::make_shared<base::PathLengthDirectAdInfSampler>(pdef_, s1, s2, minCost, maxCost, numSampleAttempts_);
+}
+
 void ompl::geometric::BiASEstar::calculateInfProb(bool update)
 {
     calculateInfProb(startAdInfSamplers_, goalAdInfSamplers_, startAdInfPdf_, goalAdInfPdf_, startAdElems_, goalAdElems_, update);
@@ -3307,13 +3316,11 @@ void ompl::geometric::BiASEstar::calculateInfProb(const std::vector<base::AdInfo
                                               NumPdf &startInfPdf, NumPdf &goalInfPdf, 
                                               std::vector<NumElem *> &startelems, std::vector<NumElem *> &goalelems, bool update)
 {
-    double startm = 0.0, goalm = 0.0;
     if (!startInfSamplers.empty())
     {
         double measure = 0;
         for (auto & sampler : startInfSamplers)
             measure += sampler->getInformedMeasure();
-        startm = measure;
         if (startInfSamplers.size() > 1)
         {
             if (!update)
@@ -3333,7 +3340,6 @@ void ompl::geometric::BiASEstar::calculateInfProb(const std::vector<base::AdInfo
         double measure = 0;
         for (auto & sampler : goalInfSamplers)
             measure += sampler->getInformedMeasure();
-        goalm = measure;
         if (goalInfSamplers.size() > 1)
         {
             if (!update)
@@ -3348,18 +3354,6 @@ void ompl::geometric::BiASEstar::calculateInfProb(const std::vector<base::AdInfo
             }
         }
     }
-
-    if (startm != 0.0 && goalm != 0.0)
-        startAdInfProb_ = startm / (startm + goalm);
-}
-
-ompl::base::AdInformedSamplerPtr ompl::geometric::BiASEstar::allocInfSampler(const base::State *s1, const base::State *s2,
-                                                                       const base::Cost &minCost, const base::Cost &maxCost)
-{
-    if (useRejectionSampling_)
-        return std::make_shared<base::RejectionAdInfSampler>(pdef_, s1, s2, minCost, maxCost, numSampleAttempts_);
-    else 
-        return std::make_shared<base::PathLengthDirectAdInfSampler>(pdef_, s1, s2, minCost, maxCost, numSampleAttempts_);
 }
 
 bool ompl::geometric::BiASEstar::sampleUniformAd(base::State *state, bool start)
@@ -3392,46 +3386,6 @@ bool ompl::geometric::BiASEstar::sampleUniform(base::State *state, const std::ve
 
 
 // informed sampling
-/*
-void ompl::geometric::BiASEstar::optimalInfSampler(const Motion *motion1, const Motion *motion2, bool start, std::vector<base::AdInformedSamplerPtr> &infSamplers, unsigned int localseg) // todo
-{
-    unsigned int segment = 0;
-    const Motion *temp = motion2;
-    while (temp->parent)
-    {
-        temp = temp->parent;
-        segment++;
-        if (temp == motion1)
-            break;
-    }
-    if (!localseg)
-    {
-        localseg = std::ceil(0.2 * (double)segment);
-        localseg = std::max(localseg, 3u);
-    }
-    if (segment > localseg)
-    {
-        unsigned int n = 0;
-        temp = motion2;
-        while (temp->parent && n < segment/2)
-        {
-            temp = temp->parent;
-            n++;
-        }
-        optimalInfSampler(motion1, temp, start, infSamplers, localseg);
-        optimalInfSampler(temp, motion2, start, infSamplers, localseg);
-    }
-    else 
-    {
-        base::Cost cost = base::Cost(motion2->cost.value() - motion1->cost.value());
-        while (start ? cost.value() <= si_->distance(motion1->state, motion2->state) : cost.value() <= si_->distance(motion2->state, motion1->state))
-            cost = base::Cost(factor_ * cost.value());
-        base::AdInformedSamplerPtr sampler = allocInfSampler(motion1->state, motion2->state, base::Cost(0.0), cost);
-        infSamplers.push_back(sampler);
-    }
-}
-*/
-
 void ompl::geometric::BiASEstar::optimalInfSampler(const Motion *motion1, const Motion *motion2, bool start, std::vector<base::AdInformedSamplerPtr> &infSamplers)
 {
     base::Cost cost = base::Cost(motion2->cost.value() - motion1->cost.value());

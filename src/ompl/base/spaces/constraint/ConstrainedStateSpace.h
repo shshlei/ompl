@@ -74,7 +74,7 @@ namespace ompl
 
             /** \brief Return whether we can step from \a s1 to \a s2 along the
              * manifold without collision. */
-            bool checkMotion(const State *s1, const State *s2) const override;
+            bool checkMotion(const State *s1, const State *s2, bool s2Valid = false) const override;
 
             /** \brief Return whether we can step from \a s1 to \a s2 along the
              * manifold without collision. If not, return the last valid state
@@ -83,7 +83,7 @@ namespace ompl
              * state if used in interpolation since the distance between the
              * last valid state and \a s2 is estimated using the ambient
              * metric. */
-            bool checkMotion(const State *s1, const State *s2, std::pair<State *, double> &lastValid) const override;
+            bool checkMotion(const State *s1, const State *s2, std::pair<State *, double> &lastValid, bool s2Valid = false) const override;
 
         protected:
             /** \brief Space in which we check motion. */

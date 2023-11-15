@@ -1,0 +1,261 @@
+/*********************************************************************
+* Software License Agreement (BSD License)
+*
+*  Copyright (c) 2011, Rice University
+*  All rights reserved.
+*
+*  Redistribution and use in source and binary forms, with or without
+*  modification, are permitted provided that the following conditions
+*  are met:
+*
+*   * Redistributions of source code must retain the above copyright
+*     notice, this list of conditions and the following disclaimer.
+*   * Redistributions in binary form must reproduce the above
+*     copyright notice, this list of conditions and the following
+*     disclaimer in the documentation and/or other materials provided
+*     with the distribution.
+*   * Neither the name of the Rice University nor the names of its
+*     contributors may be used to endorse or promote products derived
+*     from this software without specific prior written permission.
+*
+*  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+*  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+*  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+*  FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+*  COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+*  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+*  BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+*  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+*  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+*  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+*  ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+*  POSSIBILITY OF SUCH DAMAGE.
+*********************************************************************/
+
+/* Authors: Shi Shenglei */
+
+#include "ompl/geometric/planners/hsc/HSCASEstar.h"
+#include "ompl/base/samplers/adinformed/PathLengthDirectAdInfSampler.h"
+#include "ompl/util/GeometricEquations.h"
+#include <boost/math/constants/constants.hpp>
+
+ompl::geometric::HSCASEstar::HSCASEstar(const base::SpaceInformationPtr &si) : RRTBispace(si), BiHSC(si), RRTBispacestar(si), BiASE(si), BiHSCstar(si), BiASEstar(si)
+{
+    setName("HSCASEstar");
+    setLazyPath(true);
+}
+
+void ompl::geometric::HSCASEstar::setup()
+{
+    BiHSC::setup();
+
+    if (opt_)
+    {
+        prunedCost_ = opt_->infiniteCost();
+    }
+
+    // Get the measure of the entire space:
+    startPrunedMeasure_ = si_->getSpaceMeasure();
+    goalPrunedMeasure_ = si_->getSpaceMeasure();
+
+    // Calculate some constants:
+    calculateRewiringLowerBounds();
+}
+
+void ompl::geometric::HSCASEstar::clear()
+{
+    BiHSC::clear();
+
+    clearStartAdInfSampler();
+    clearGoalAdInfSampler();
+    startAdInfProb_ = startInfProb_ = 0.0;
+
+    localRatio_ = 0.75;
+
+    clearStartInfSampler();
+    clearGoalInfSampler();
+
+    iterations_ = 0;
+    prunedCost_ = base::Cost(std::numeric_limits<double>::quiet_NaN());
+    startPrunedMeasure_ = si_->getSpaceMeasure();
+    goalPrunedMeasure_ = si_->getSpaceMeasure();
+    calculateRewiringLowerBounds();
+}
+
+ompl::base::PlannerStatus ompl::geometric::HSCASEstar::solve(const base::PlannerTerminationCondition &ptc)
+{
+    base::PlannerStatus ps= prepareSolve(ptc);
+    if (ps != base::PlannerStatus::PREPARE_SUCCESS)
+        return ps;   
+
+    clearStartAdInfSampler();
+    clearGoalAdInfSampler();
+
+    clearStartInfSampler();
+    clearGoalInfSampler();
+    sampler_ = si_->allocStateSampler();
+
+    OMPL_INFORM("%s: Starting planning with %u states already in datastructure. Seeking a solution better than %.5f.",
+                getName().c_str(), (tStart_->size() + tGoal_->size()), opt_->getCostThreshold().value());
+
+    if (!si_->getStateSpace()->isMetricSpace())
+    {
+        OMPL_WARN("%s: The state space (%s) is not metric and as a result the optimization objective may not satisfy "
+                  "the triangle inequality. "
+                  "You may need to disable pruning or rejection.",
+                  getName().c_str(), si_->getStateSpace()->getName().c_str());
+    }
+
+    const base::ReportIntermediateSolutionFn intermediateSolutionCallback = pdef_->getIntermediateSolutionCallback();
+
+    bool startTree = true;
+    bool optimal = false;
+
+    Motion *startAd = nullptr, *goalAd = nullptr;
+
+    unsigned int adinfcount = 0, infcount = 0;
+
+    bool ais = false;
+    bool adinf = true;
+
+    bool reverse = false;
+
+    unsigned int connect1 = 0;
+    double ratio1 = 0.5, maxratio1 = 0.0, connectTresh1 = 10.0;
+
+    while (!ptc)
+    {
+        iterations_++;
+
+        if (pis_.getSampledGoalsCount() < tGoal_->size() / 2)
+        {
+            const base::State *st = pis_.nextGoal();
+            if (st != nullptr)
+            {
+                auto *motion = new Motion(si_);
+                si_->copyState(motion->state, st);
+                motion->valid = true;
+                motion->stateValid = Valid;
+                motion->root = motion->state;
+                motion->cost = opt_->identityCost();
+                tGoal_->add(motion);
+                goalMotions_.push_back(motion);
+                if (lazyNode_)
+                {
+                    base::SafetyCertificate *sc = new base::SafetyCertificate(si_, certificateDim_);
+                    si_->copyState(sc->state, st);
+                    delete sc->contact;
+                    sc->contact = nullptr;
+
+                    SafetyCertificateWithElems *sce = new SafetyCertificateWithElems();
+                    sce->sc = sc;
+                    sce->objects.push_back(motion);
+                    snne_.push_back(sce);
+
+                    motion->sce = sce;
+                    motion->scd.resize(certificateDim_);
+                    std::fill(motion->scd.begin(), motion->scd.end(), 0.0);
+                }
+            }
+        }
+
+        if (lazyNode_)
+            removeInvalidMotions(maxInvalidNodeRatio_);
+
+        batchGrow(startTree, ais, adinf, true);
+
+        if (startAd == nullptr)
+        {
+            std::size_t index = 0;
+            if (selectCMotion(index, reverse, ratio1))
+            {
+                auto pair = connectionPoint_[index];
+                startAd = pair.first;
+                goalAd = pair.second;
+            }
+        }
+
+        bool ad = false, clearoradd = false;
+        bool updatedSolution = findBetterSolution(startAd, goalAd, ad, clearoradd, optimal, ratio1, maxratio1, connect1, connectTresh1);
+
+        if (optimal)
+            break;
+
+        if (ad)
+        {
+            ais = false;
+            startAd = nullptr;
+            goalAd = nullptr;
+
+            tree_ = -1;
+            adinfcount = 0;
+            startAdInfProb_ = -1.0;
+
+            clearStartAdInfSampler();
+            clearGoalAdInfSampler();
+        }
+            
+        if (updatedSolution)
+        {
+            reportBetterSolution(intermediateSolutionCallback);
+            
+            if (startAd != nullptr && !(keepCondition(startAd, bestCost_, true) && keepCondition(goalAd, bestCost_, false)))
+            {
+                clearoradd = false;
+
+                ais = false;
+                startAd = nullptr;
+                goalAd = nullptr;
+
+                tree_ = -1;
+                adinfcount = 0;
+                startAdInfProb_ = -1.0;
+
+                clearStartAdInfSampler();
+                clearGoalAdInfSampler();
+            }
+
+            int numPruned = pruneTree(bestCost_);
+            if (0)
+                OMPL_INFORM("%s: %u states are pruned from the tree, %u states are left", getName().c_str(), numPruned, tStart_->size() + tGoal_->size());
+            
+            infcount = 0;
+        }
+        else if (solved_)
+        {
+            infcount++;
+            if (infcount == 3u)
+            {
+                clearStartInfSampler();
+                clearGoalInfSampler();
+                startInfProb_ = -1.0;
+            }
+        }
+
+        processAdEllipsoidRind(clearoradd, ais, adinfcount);
+
+        if (!ais)
+            startAd = goalAd = nullptr;
+
+        if (solved_ && ais)
+            batch_ = 20;
+        else 
+            batch_ = 10;
+    }
+
+    if (solved_ || optimal)
+    {
+        ptc.terminate();
+        if (!optimal)
+        {
+            isPathValid(bestStartMotion_, bestGoalMotion_);
+        }
+
+        processSolution(bestStartMotion_, bestGoalMotion_);
+    }
+
+    OMPL_INFORM("%s: Created %u states (%u start + %u goal). Final solution cost %.5f", getName().c_str(), tStart_->size() + tGoal_->size(),
+                tStart_->size(), tGoal_->size(), bestCost_.value());
+
+    return (solved_ || optimal) ? base::PlannerStatus::EXACT_SOLUTION : base::PlannerStatus::TIMEOUT;
+}

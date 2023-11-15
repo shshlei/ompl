@@ -52,13 +52,13 @@ ompl::base::ConstrainedMotionValidator::ConstrainedMotionValidator(const SpaceIn
 {
 }
 
-bool ompl::base::ConstrainedMotionValidator::checkMotion(const State *s1, const State *s2) const
+bool ompl::base::ConstrainedMotionValidator::checkMotion(const State *s1, const State *s2, bool /*s2Valid*/) const
 {
     return ss_.getConstraint()->isSatisfied(s2) && ss_.discreteGeodesic(s1, s2, false);
 }
 
 bool ompl::base::ConstrainedMotionValidator::checkMotion(const State *s1, const State *s2,
-                                                         std::pair<State *, double> &lastValid) const
+                                                         std::pair<State *, double> &lastValid, bool /*s2Valid*/) const
 {
     // Invoke the manifold-traversing algorithm to save intermediate states
     std::vector<ompl::base::State *> stateList;

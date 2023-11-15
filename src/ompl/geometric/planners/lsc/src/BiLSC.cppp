@@ -1,0 +1,1362 @@
+/*********************************************************************
+ * Software License Agreement (BSD License)
+ *
+ *  Copyright (c) 2008, Willow Garage, Inc.
+ *  All rights reserved.
+ *
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted provided that the following conditions
+ *  are met:
+ *
+ *   * Redistributions of source code must retain the above copyright
+ *     notice, this list of conditions and the following disclaimer.
+ *   * Redistributions in binary form must reproduce the above
+ *     copyright notice, this list of conditions and the following
+ *     disclaimer in the documentation and/or other materials provided
+ *     with the distribution.
+ *   * Neither the name of the Willow Garage nor the names of its
+ *     contributors may be used to endorse or promote products derived
+ *     from this software without specific prior written permission.
+ *
+ *  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ *  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ *  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+ *  FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ *  COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+ *  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+ *  BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ *  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ *  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ *  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+ *  ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ *  POSSIBILITY OF SUCH DAMAGE.
+ *********************************************************************/
+
+/* Author: Shi Shenglei */
+
+#include "ompl/geometric/planners/lsc/BiLSC.h"
+#include "ompl/base/goals/GoalSampleableRegion.h"
+#include "ompl/tools/config/SelfConfig.h"
+#include "ompl/util/Time.h"
+
+#include <limits>
+#include <cassert>
+#include <algorithm>
+#include <vector>
+
+#include "ompl/base/PlannerData.h"
+#include "ompl/base/PlannerDataStorage.h"
+#include <boost/format.hpp>
+#include <ompl/base/StateSampler.h>
+
+ompl::geometric::BiLSC::BiLSC(const base::SpaceInformationPtr &si, const SafetyCertificateChecker &safetyCertificateChecker,
+                              const CollisionCertificateChecker &collisionCertificateChecker, double confidence) :
+    base::Planner(si, "BiLSC"), safetyCertificateChecker_(safetyCertificateChecker), collisionCertificateChecker_(collisionCertificateChecker), confidence_(confidence)
+{
+    specs_.recognizedGoal = base::GOAL_SAMPLEABLE_REGION;
+    specs_.directed = true;
+
+    Planner::declareParam<double>("range", this, &BiLSC::setRange, &BiLSC::getRange, "0.:1.:10000.");
+	Planner::declareParam<unsigned int>("collision_confidence", this, &BiLSC::setCollisionConfidence, &BiLSC::getCollisionConfidence, "0:1:10");
+}
+
+ompl::geometric::BiLSC::~BiLSC()
+{
+    freeMemory();
+}
+
+void ompl::geometric::BiLSC::setup()
+{
+    Planner::setup();
+    tools::SelfConfig sc(si_, getName());
+
+    sc.configurePlannerRange(maxDistance_);
+
+    symmetric_ = si_->getStateSpace()->hasSymmetricDistance() && si_->getStateSpace()->hasSymmetricInterpolate();
+
+    if (!tStart_)
+        tStart_.reset(tools::SelfConfig::getDefaultNearestNeighbors<Motion *>(this));
+    if (!tGoal_)
+        tGoal_.reset(tools::SelfConfig::getDefaultNearestNeighbors<Motion *>(this));
+    tStart_->setDistanceFunction([this](const Motion *a, const Motion *b)
+                                 {
+                                    return distanceFunction(a, b); 
+                                 });
+    tGoal_->setDistanceFunction([this](const Motion *a, const Motion *b)
+                                {
+                                    return distanceFunction(a, b); 
+                                });
+
+	if (!snn_)
+        snn_.reset(tools::SelfConfig::getDefaultNearestNeighbors<base::SafetyCertificate *>(this));
+    snn_->setDistanceFunction([this](const base::SafetyCertificate *a, const base::SafetyCertificate *b)
+                             {
+                                 return distanceFunction(a, b);
+                             });
+	
+	if (!onn_)
+        onn_.reset(tools::SelfConfig::getDefaultNearestNeighbors<base::SafetyCertificate *>(this));
+    onn_->setDistanceFunction([this](const base::SafetyCertificate *a, const base::SafetyCertificate *b)
+                             {
+                                 return distanceFunction(a, b);
+                             });
+}
+
+void ompl::geometric::BiLSC::freeMemory()
+{
+    std::vector<Motion *> motions;
+
+    if (tStart_)
+    {
+        tStart_->list(motions);
+        for (auto & motion : motions)
+        {
+            if (motion->state != nullptr)
+                si_->freeState(motion->state);
+            delete motion;
+        }
+        motions.clear();
+    }
+
+    if (tGoal_)
+    {
+        tGoal_->list(motions);
+        for (auto & motion : motions)
+        {
+            if (motion->state != nullptr)
+                si_->freeState(motion->state);
+            delete motion;
+        }
+        motions.clear();
+    }
+
+    std::vector<base::SafetyCertificate *> safetycertificates;
+
+	if (snn_)
+    {
+        snn_->list(safetycertificates);
+        for (auto & safetycertificate : safetycertificates)
+        {
+            if (safetycertificate->state != nullptr)
+                si_->freeState(safetycertificate->state);
+			if (safetycertificate->contact != nullptr)
+				delete safetycertificate->contact;
+            if (!safetycertificate->estates_.empty())
+            {
+                for (auto & state : safetycertificate->estates_)
+                    si_->freeState(state);
+                safetycertificate->estates_.clear();
+                safetycertificate->erange_.clear();
+            }
+            delete safetycertificate;
+        }
+        safetycertificates.clear();
+    }
+
+	if (onn_)
+    {
+        onn_->list(safetycertificates);
+        for (auto &safetycertificate : safetycertificates)
+        {
+            if (safetycertificate->state != nullptr)
+                si_->freeState(safetycertificate->state);
+			if (safetycertificate->contact != nullptr)
+				delete safetycertificate->contact;
+            delete safetycertificate;
+        }
+        safetycertificates.clear();
+    }
+}
+
+void ompl::geometric::BiLSC::clear()
+{
+    Planner::clear();
+    sampler_.reset();
+    freeMemory();
+    if (tStart_)
+    {
+        tStart_->clear();
+    }
+
+    if (tGoal_)
+    {
+        tGoal_->clear();
+    }
+
+	if (snn_)
+    {
+        snn_->clear();
+    }
+
+	if (onn_)
+    {
+        onn_->clear();
+    }
+
+    startMotions_.clear();
+    goalMotions_.clear();
+}
+
+ompl::base::PlannerStatus ompl::geometric::BiLSC::solve(const base::PlannerTerminationCondition &ptc)
+{
+    checkValidity();
+
+    auto *goal = dynamic_cast<base::GoalSampleableRegion *>(pdef_->getGoal().get());
+
+    if (goal == nullptr)
+    {
+        OMPL_ERROR("%s: Unknown type of goal", getName().c_str());
+        return base::PlannerStatus::UNRECOGNIZED_GOAL_TYPE;
+    }
+    else if (!goal->couldSample())
+    {
+        OMPL_ERROR("%s: Insufficient states in sampleable goal region", getName().c_str());
+        return base::PlannerStatus::INVALID_GOAL;
+    }
+
+    if (pis_.haveMoreStartStates())
+    {
+        while (const base::State *st = pis_.nextStart())
+        {
+            auto *motion = new Motion(si_);
+            si_->copyState(motion->state, st);
+            motion->valid = true;
+            motion->stateValid = true;
+            motion->root = motion->state;
+            tStart_->add(motion);
+            startMotions_.push_back(motion);
+
+            auto *sc = new base::SafetyCertificate(si_);
+            delete sc->contact;
+            sc->contact = nullptr;
+            si_->copyState(sc->state, st);
+            sc->confidence_ = confidence_;
+            motion->sc = sc;
+            motion->scself = true;
+            snn_->add(sc);
+        }
+    }
+
+    if (tStart_->size() == 0)
+    {
+        OMPL_ERROR("%s: Motion planning start tree could not be initialized!", getName().c_str());
+        return base::PlannerStatus::INVALID_START;
+    }
+
+    // Allocate a sampler if necessary
+    if (!sampler_)
+        sampler_ = si_->allocStateSampler();
+
+    auto csampler = static_cast<ompl::base::CompoundStateSampler *>(sampler_.get());
+
+//    csampler->setLocalSeed(935621074, 0);
+//    csampler->setLocalSeed(818269568, 1);
+
+    OMPL_INFORM("Local seed_0 %u", csampler->getLocalSeed(0));
+    OMPL_INFORM("Local seed_1 %u", csampler->getLocalSeed(1));
+
+    OMPL_INFORM("%s: Starting planning with %d states already in datastructure", getName().c_str(),
+                (int)(tStart_->size() + tGoal_->size()));
+
+    TreeGrowingInfo tgi;
+    tgi.xstate = si_->allocState();
+
+    auto *rmotion = new Motion(si_);
+    base::State *rstate = rmotion->state;
+
+    bool startTree = true;
+    bool solved = false;
+
+    Motion *startMotion = nullptr, *goalMotion = nullptr;
+
+    unsigned int connectTimes = 0;
+
+    while (!ptc)
+    {
+        TreeData &tree = startTree ? tStart_ : tGoal_;
+        tgi.start = startTree;
+        startTree = !startTree;
+        TreeData &otherTree = startTree ? tStart_ : tGoal_;
+
+        if (tGoal_->size() == 0 || pis_.getSampledGoalsCount() < tGoal_->size() / 2)
+        {
+            const base::State *st = tGoal_->size() == 0 ? pis_.nextGoal(ptc) : pis_.nextGoal();
+            if (st != nullptr)
+            {
+                auto *motion = new Motion(si_);
+                si_->copyState(motion->state, st);
+                motion->valid= true;
+                motion->stateValid = true;
+                motion->root = motion->state;
+                tGoal_->add(motion);
+                goalMotions_.push_back(motion);
+
+                auto *sc = new base::SafetyCertificate(si_);
+                delete sc->contact;
+                sc->contact = nullptr;
+                si_->copyState(sc->state, st);
+                sc->confidence_ = confidence_;
+                motion->sc = sc;
+                motion->scself = true;
+                snn_->add(sc);
+            }
+
+            if (tGoal_->size() == 0)
+            {
+                OMPL_ERROR("%s: Unable to sample any valid states for goal tree", getName().c_str());
+                break;
+            }
+        }
+
+        /* sample random state */
+        sampler_->sampleUniform(rstate);
+
+        GrowState gs = growTree(tree, tgi, rmotion);
+
+        /* remember which motion was just added */
+        Motion *addedMotion = tgi.xmotion;
+
+        if (gs != REACHED)
+            si_->copyState(rstate, addedMotion->state);
+
+        tgi.start = startTree;
+        GrowState gsc = growTree(otherTree, tgi, rmotion);
+
+        if (gsc == REACHED)
+        {
+            startMotion = startTree ? tgi.xmotion : addedMotion;
+            goalMotion = startTree ? addedMotion : tgi.xmotion;
+        }
+        else 
+        {
+            if (gs != TRAPPED)
+            {
+                Motion *otherMotion = otherTree->nearest(addedMotion);
+
+                if (si_->distance(addedMotion->state, otherMotion->state) < maxDistance_ && checkInterMotion(addedMotion, otherMotion))
+                {
+                    auto *motion = new Motion(si_);
+                    si_->copyState(motion->state, otherMotion->state);
+                    motion->parent = addedMotion;
+                    motion->root = motion->parent->root;
+
+                    tree->add(motion);
+                    motion->parent->children.push_back(motion);
+
+                    motion->sc = otherMotion->sc;
+                    motion->scself = otherMotion->scself;
+                    motion->stateValid = otherMotion->stateValid;
+                    if (addedMotion->stateValid)
+                        motion->valid = true;
+
+                    gsc = REACHED;
+
+                    startMotion = startTree ? otherMotion : addedMotion;
+                    goalMotion = startTree ? addedMotion : otherMotion;
+                }
+            }
+            else if (gsc != TRAPPED)
+            {
+                addedMotion = tgi.xmotion;
+
+                Motion *otherMotion = tree->nearest(addedMotion);
+
+                if (si_->distance(addedMotion->state, otherMotion->state) < maxDistance_ && checkInterMotion(addedMotion, otherMotion))
+                {
+                    auto *motion = new Motion(si_);
+                    si_->copyState(motion->state, otherMotion->state);
+                    motion->parent = addedMotion;
+                    motion->root = motion->parent->root;
+
+                    otherTree->add(motion);
+                    motion->parent->children.push_back(motion);
+
+                    motion->sc = otherMotion->sc;
+                    motion->scself = otherMotion->scself;
+                    motion->stateValid = otherMotion->stateValid;
+                    if (addedMotion->stateValid)
+                        motion->valid = true;
+
+                    gsc = REACHED;
+
+                    startMotion = startTree ? addedMotion : otherMotion;
+                    goalMotion = startTree ? otherMotion : addedMotion;
+                }
+            }
+        }
+
+        /* if we connected the trees in a valid way (start and goal pair is valid)*/
+        if (gsc == REACHED)
+        {
+            if (goal->isStartGoalPairValid(startMotion->root, goalMotion->root))
+            {
+                connectTimes++;
+
+                if (!startTree ? isPathValid(tree, otherTree, startMotion, goalMotion) : 
+                                 isPathValid(otherTree, tree, startMotion, goalMotion))
+                {
+                    if (startMotion->parent != nullptr)
+                        startMotion = startMotion->parent;
+                    else
+                        goalMotion = goalMotion->parent;
+
+                    /* construct the solution path */
+                    Motion *solution = startMotion;
+                    std::vector<Motion *> mpath1;
+                    while (solution != nullptr)
+                    {
+                        mpath1.push_back(solution);
+                        solution = solution->parent;
+                    }
+
+                    solution = goalMotion;
+                    std::vector<Motion *> mpath2;
+                    while (solution != nullptr)
+                    {
+                        mpath2.push_back(solution);
+                        solution = solution->parent;
+                    }
+
+                    auto path(std::make_shared<PathGeometric>(si_));
+                    path->getStates().reserve(mpath1.size() + mpath2.size());
+                    for (int i = mpath1.size() - 1; i >= 0; --i)
+                        path->append(mpath1[i]->state);
+                    for (auto &i : mpath2)
+                        path->append(i->state);
+
+                    pdef_->addSolutionPath(path, false, 0.0, getName());
+                    solved = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    si_->freeState(tgi.xstate);
+    si_->freeState(rstate);
+    delete rmotion;
+
+    OMPL_INFORM("%s: Created %u states (%u start + %u goal), %u certificates (%u snn + %u onn)", getName().c_str(), tStart_->size() + tGoal_->size(),
+                tStart_->size(), tGoal_->size(), snn_->size() + onn_->size(), snn_->size(), onn_->size());
+
+    return solved ? base::PlannerStatus::EXACT_SOLUTION : base::PlannerStatus::TIMEOUT;
+}
+
+ompl::geometric::BiLSC::GrowState ompl::geometric::BiLSC::growTree(TreeData &tree, TreeGrowingInfo &tgi, Motion *rmotion)
+{
+//    bool currentTree = (tgi.start == growCurrentTree(rmotion->state, tgi));
+
+    Motion *nmotion = tree->nearest(rmotion);
+    tgi.xmotion = nmotion;
+
+    if (si_->equalStates(nmotion->state, rmotion->state))
+        return TRAPPED;
+
+    bool reach = false;
+
+    unsigned int iter = 0;
+
+    bool fsc = false;
+    base::SafetyCertificate *fcsc;
+
+    while (!reach)
+    {
+        iter++;
+
+        nmotion = tgi.xmotion;
+
+        base::SafetyCertificate *sc = nmotion->sc;
+        std::vector<base::SafetyCertificate *> nsc;
+        nsc.push_back(sc);
+
+        base::State *dstate = rmotion->state;
+        double d = tgi.start ? si_->distance(nmotion->state, rmotion->state) : si_->distance(rmotion->state, nmotion->state);
+        if (d > maxDistance_)
+        {
+            if (tgi.start)
+                si_->getStateSpace()->interpolate(nmotion->state, rmotion->state, maxDistance_ / d, tgi.xstate);
+            else 
+                si_->getStateSpace()->interpolate(rmotion->state, nmotion->state, 1.0 - maxDistance_ / d, tgi.xstate);
+
+            /* Check if we have moved at all. Due to some stranger state spaces (e.g., the constrained state spaces),
+             * interpolate can fail and no progress is made. Without this check, the algorithm gets stuck in a loop as it
+             * thinks it is making progress, when none is actually occurring. */
+            if (si_->equalStates(nmotion->state, tgi.xstate))
+                break;
+
+            dstate = tgi.xstate;
+        }
+        else 
+            reach = true;
+
+//        if (!currentTree)
+//        {
+//            if (tgi.start != growCurrentTree(dstate, tgi))
+//            {
+//                reach = false;
+//                break;
+//            }
+//        }
+
+        safetyCertificateChecker_(dstate, nsc, fsc, fcsc);
+
+        if (fsc)
+        {
+            auto *motion = new Motion(si_);
+            si_->copyState(motion->state, dstate);
+            motion->parent = nmotion;
+            motion->root = nmotion->root;
+            motion->parent->children.push_back(motion);
+
+            tree->add(motion);
+            tgi.xmotion = motion;
+
+            motion->sc = fcsc;
+
+            continue;
+        }
+
+        if (isValid(dstate, fcsc))
+        {
+            auto *motion = new Motion(si_);
+            si_->copyState(motion->state, dstate);
+            motion->stateValid = true;
+            motion->sc = fcsc;
+            motion->scself = true;
+
+            if (0)//(sc->lockConfidence_ && nmotion->scself)
+            {
+                fsc = false;
+
+                while (!fsc)
+                {
+                    OMPL_INFORM("%s: while in ", getName().c_str());
+                    si_->getStateSpace()->interpolate(nmotion->state, dstate, 0.8, tgi.xstate);
+                    dstate = tgi.xstate;
+                    safetyCertificateChecker_(dstate, nsc, fsc, fcsc);
+                }
+                OMPL_INFORM("%s: while out ", getName().c_str());
+
+                auto *motion1 = new Motion(si_);
+                si_->copyState(motion1->state, dstate);
+                motion1->parent = nmotion;
+                motion1->root = nmotion->root;
+                motion1->parent->children.push_back(motion1);
+
+                tree->add(motion1);
+                motion1->sc = fcsc;
+
+                motion->parent = motion1;
+                motion->root = motion1->root;
+                motion->parent->children.push_back(motion);
+
+                tree->add(motion);
+                tgi.xmotion = motion;
+            }
+            else 
+            {
+                motion->parent = nmotion;
+                motion->root = nmotion->root;
+                motion->parent->children.push_back(motion);
+
+                tree->add(motion);
+                tgi.xmotion = motion;
+            }
+        }
+        else
+        {
+            reach = false;
+            break;
+        }
+    }
+
+    return reach ? REACHED : (iter == 1 ? TRAPPED : ADVANCED);
+}
+
+bool ompl::geometric::BiLSC::growCurrentTree(const base::State *state, TreeGrowingInfo tgi) const
+{
+    double dist1 = std::numeric_limits<double>::infinity();
+    double dist2 = std::numeric_limits<double>::infinity();
+
+    for (unsigned int i = 0; i < startMotions_.size(); i++)
+    {
+        double d = si_->distance(startMotions_[i]->state, state);
+        if (d < dist1)
+            dist1 = d;
+    }
+
+    for (unsigned int i = 0; i < goalMotions_.size(); i++)
+    {
+        double d = si_->distance(state, goalMotions_[i]->state);
+        if (d < dist2)
+            dist2 = d;
+    }
+
+    if (tgi.start)
+        return dist1 <= dist2;
+    else 
+        return !(dist2 <= dist1);
+}
+
+bool ompl::geometric::BiLSC::isPathValid(TreeData &tree, TreeData &otherTree,
+                                         Motion *motion, Motion *otherMotion)
+{
+    std::vector<Motion *> mpath1;
+    std::vector<Motion *> mpath2;
+
+    const base::State *root = nullptr;
+    Motion *connect = nullptr;
+
+    bool start = true;
+
+    bool stateValid = false;
+
+    while (motion->parent != nullptr || otherMotion->parent != nullptr)
+    {
+        if (start && motion->parent != nullptr)
+        {
+            if (!(motion->valid && motion->parent->stateValid))
+            {
+                if (checkStartMotion(motion->parent, motion, stateValid))
+                {
+                    mpath1.push_back(motion);
+
+                    motion->valid = true;
+                }
+                else
+                {
+                    Motion* temp = motion->parent;
+                    bool exchange = false;
+                    if (stateValid)
+                        motion->parent->stateValid = true;
+
+                    if (!mpath1.empty() && symmetric_)
+                    {
+                        if (!mpath2.empty())
+                            connect = mpath2.front();
+                        else 
+                            connect = otherMotion;
+                        root = connect->root;
+
+                        exchangeMotion(tree, otherTree, motion, mpath1, connect, root);
+                        exchange = true;
+                    }
+
+                    if (stateValid)
+                    {
+                        if (!exchange)
+                            removeMotion(tree, motion);
+                    }
+                    else 
+                        removeMotion(tree, temp);
+
+                    mpath1.clear();
+                    mpath2.clear();
+
+                    return false;
+                }
+            }
+            else 
+                mpath1.push_back(motion);
+
+            motion = motion->parent;
+        }
+        else if(otherMotion->parent != nullptr) 
+        {
+            if (!(otherMotion->valid && otherMotion->parent->stateValid))
+            {
+                if (checkGoalMotion(otherMotion, otherMotion->parent, stateValid))
+                {
+                    mpath2.push_back(otherMotion);
+
+                    otherMotion->valid = true;
+                }
+                else
+                {
+                    Motion* temp = otherMotion->parent;
+                    bool exchange = false;
+                    if (stateValid)
+                        otherMotion->parent->stateValid = true;
+
+                    if (!mpath2.empty() && symmetric_)
+                    {
+                        if (!mpath1.empty())
+                            connect = mpath1.front();
+                        else 
+                            connect = motion;
+                        root = connect->root;
+
+                        exchangeMotion(otherTree, tree, otherMotion, mpath2, connect, root);
+                        exchange = true;
+                    }
+
+                    if (stateValid)
+                    {
+                        if (!exchange)
+                            removeMotion(otherTree, otherMotion);
+                    }
+                    else 
+                        removeMotion(otherTree, temp);
+
+                    mpath1.clear();
+                    mpath2.clear();
+
+                    return false;
+                }
+            }
+            else 
+                mpath2.push_back(otherMotion);
+
+            otherMotion = otherMotion->parent;
+        }
+
+        start = !start;
+    }
+
+    mpath1.clear();
+    mpath2.clear();
+
+    return true;
+}
+
+//bool ompl::geometric::BiLSC::isPathValidRewire(TreeData &tree, TreeData &otherTree,
+//                                         Motion *motion, Motion *otherMotion)
+//{
+//    std::vector<Motion *> mpath1;
+//    std::vector<Motion *> mpath2;
+//
+//    bool valid = true;
+//    bool start = true;
+//    bool stateValid = false;
+//
+//    std::vector<Motion *> nbh;
+//
+//    while (motion->parent != nullptr || otherMotion->parent != nullptr)
+//    {
+//        if (start && motion->parent != nullptr)
+//        {
+//            if (!(motion->valid && motion->parent->stateValid))
+//            {
+//                if (checkStartMotion(motion->parent, motion, stateValid))
+//                {
+//                    mpath1.push_back(motion);
+//
+//                    motion->valid = true;
+//                }
+//                else
+//                {
+//                    Motion* temp = motion->parent;
+//
+//                    removeFromParent(motion);
+//
+//                    if (!stateValid)
+//                    {
+//                        temp = temp->parent;
+//                        removeFromParent(motion->parent);
+//                        rewireChildren(tree, motion->parent);
+//                        removeMotion(tree, motion->parent);
+//
+//                        isValid(motion);
+//                    }
+//
+//                    bool rvalid = true;
+//                    if (motion->stateValid) 
+//                        rvalid = rewireMotion(tree, motion); 
+//                    else 
+//                    {
+//                        if (mpath1.empty())
+//                        {
+//                            rvalid = false;
+//
+//                            rewireChildren(tree, motion);
+//                            removeMotion(tree, motion);
+//                        }
+//                        else 
+//                        {
+//                            Motion *last = mpath1.back();
+//                            removeFromParent(last);
+//                            rvalid = rewireMotion(tree, last);
+//
+//                            rewireChildren(tree, motion);
+//                            removeMotion(tree, motion);
+//
+//                            if (rvalid)
+//                                motion = last;
+//                        }
+//                    }
+//
+//                    if (!rvalid)
+//                    {                       
+//                        valid = false;
+//                        break;
+//                    }
+//                }
+//            }
+//            else 
+//                mpath1.push_back(motion);
+//
+//            motion = motion->parent;
+//        }
+//        else if(otherMotion->parent != nullptr) 
+//        {
+//            if (!(otherMotion->valid && otherMotion->parent->stateValid))
+//            {
+//                if (checkGoalMotion(otherMotion, otherMotion->parent, stateValid))
+//                {
+//                    mpath2.push_back(otherMotion);
+//
+//                    otherMotion->valid = true;
+//                }
+//                else
+//                {
+//                    Motion* temp = otherMotion->parent;
+//
+//                    removeFromParent(otherMotion);
+//
+//                    if (!stateValid)
+//                    {
+//                        temp = temp->parent;
+//                        removeFromParent(otherMotion->parent);
+//                        rewireChildren(otherTree, otherMotion->parent);
+//                        removeMotion(otherTree, otherMotion->parent);
+//
+//                        isValid(otherMotion);
+//                    }
+//
+//                    bool rvalid = true;
+//                    if (otherMotion->stateValid) 
+//                        rvalid = rewireMotion(otherTree, otherMotion); 
+//                    else 
+//                    {
+//                        if (mpath2.empty())
+//                        {
+//                            rvalid = false;
+//
+//                            rewireChildren(otherTree, otherMotion);
+//                            removeMotion(otherTree, otherMotion);
+//                        }
+//                        else 
+//                        {
+//                            Motion *last = mpath2.back();
+//                            removeFromParent(last);
+//                            rvalid = rewireMotion(otherTree, last);
+//
+//                            rewireChildren(otherTree, otherMotion);
+//                            removeMotion(otherTree, otherMotion);
+//
+//                            if (rvalid)
+//                                otherMotion = last;
+//                        }
+//                    }
+//
+//                    if (!rvalid)
+//                    {                       
+//                        valid = false;
+//                        break;
+//                    }
+//                }
+//            }
+//            else 
+//                mpath2.push_back(otherMotion);
+//
+//            otherMotion = otherMotion->parent;
+//        }
+//
+//        start = !start;
+//    }
+//
+//    mpath1.clear();
+//    mpath2.clear();
+//
+//    return valid;
+//}
+
+void ompl::geometric::BiLSC::rewireChildren(TreeData &tree, Motion *motion)
+{
+    while (!motion->children.empty())
+    {
+        auto child = motion->children.front();
+        rewireMotion(tree, child);
+    }
+}
+
+bool ompl::geometric::BiLSC::rewireMotion(TreeData &tree, Motion *motion)
+{
+    bool valid = true;
+
+    removeFromParent(motion);
+
+    Motion *pmotion = motion->parent;
+
+    motion->parent = nullptr;
+
+    const base::State *root = motion->root;
+
+    if (!motion->stateValid)
+    {
+        valid = false;
+        rewireChildren(tree, motion);
+        removeMotion(tree, motion);
+    }
+    else 
+    {
+        bool rvalid = false;
+
+        std::vector<Motion *> nbh;
+        tree->nearestK(motion, 20, nbh);
+
+        for (std::size_t i = 0; i < nbh.size(); ++i)
+        {
+            if (nbh[i] != pmotion && nbh[i]->stateValid)
+            {
+                Motion *temp = nbh[i];
+                while (temp->parent != nullptr)
+                {
+                    temp = temp->parent;
+                }
+
+                if (temp->state != root)
+                    continue;
+
+                bool motionValid = si_->distance(nbh[i]->state, motion->state) < maxDistance_ &&
+                                   checkInterMotion(nbh[i], motion);
+
+                if (motionValid)
+                {
+                    motion->parent = nbh[i];
+                    motion->root   = motion->parent->root;
+                    motion->valid  = true;
+                    motion->parent->children.push_back(motion);
+
+                    rvalid = true;
+                    break;
+                }
+            }
+        }
+
+        if (!rvalid)
+        {
+            valid = false;
+            removeMotion(tree, motion);
+        }
+    }
+
+    return valid;
+}
+
+void ompl::geometric::BiLSC::removeFromParent(Motion *m)
+{
+    for (auto it = m->parent->children.begin(); it != m->parent->children.end(); ++it)
+    {
+        if (*it == m)
+        {
+            m->parent->children.erase(it);
+            break;
+        }
+    }
+}
+
+void ompl::geometric::BiLSC::exchangeMotion(TreeData &tree, TreeData &otherTree, Motion *motion, std::vector<Motion *> &mpath,
+                                            Motion *connect, const base::State *root)
+{
+    //root parent children
+    removeFromTreeAddTreeChangeRoot(tree, otherTree, motion, root);
+
+    /* remove self from parent list */
+    if (motion->parent != nullptr)
+    {
+        for (unsigned int i = 0; i < motion->parent->children.size(); ++i)
+            if (motion->parent->children[i] == motion)
+            {
+                motion->parent->children.erase(motion->parent->children.begin() + i);
+                break;
+            }
+    }
+
+    for (auto & m: mpath)
+    {
+        if (m->parent != nullptr)
+        {
+            for (unsigned int i = 0; i < m->parent->children.size(); ++i)
+                if (m->parent->children[i] == m)
+                {
+                    m->parent->children.erase(m->parent->children.begin() + i);
+                    break;
+                }
+        }
+    }
+
+    Motion *last = mpath.front();
+    if (!last->children.empty())
+    {
+        for (auto & child : last->children)
+        {
+            child->parent = connect;
+            child->parent->children.push_back(child);
+        }
+    }
+
+    otherTree->remove(last);
+    if (last->state != nullptr)
+        si_->freeState(last->state);
+    delete last;
+
+    mpath.erase(mpath.begin());
+
+    if (!mpath.empty())
+    {
+        last = mpath.front();
+        last->parent = connect;
+        last->parent->children.push_back(last);
+
+        if(mpath.size() > 1)
+        {
+            for (unsigned int i = 1; i < mpath.size(); ++i)
+            {
+                mpath[i]->parent = mpath[i-1];
+                mpath[i]->parent->children.push_back(mpath[i]);
+            }
+        }
+
+        last = mpath.back();
+        motion->parent = last;
+        motion->parent->children.push_back(motion);
+    }
+    else 
+    {
+        motion->parent = connect;
+        motion->parent->children.push_back(motion);
+    }
+
+    connect->stateValid = true;
+    motion->stateValid = true;
+    motion->valid = true;
+}
+
+void ompl::geometric::BiLSC::removeFromTreeAddTreeChangeRoot(TreeData &tree, TreeData &otherTree, Motion *motion, const base::State *root)
+{
+    tree->remove(motion);
+    motion->root = root;
+    otherTree->add(motion);
+
+    /* remove children */
+    for (auto &i : motion->children)
+    {
+        removeFromTreeAddTreeChangeRoot(tree, otherTree, i, root);
+    }
+}
+
+void ompl::geometric::BiLSC::removeMotion(TreeData &tree, Motion *motion)
+{
+    tree->remove(motion);
+
+    /* remove self from parent list */
+
+    if (motion->parent != nullptr)
+    {
+        for (unsigned int i = 0; i < motion->parent->children.size(); ++i)
+            if (motion->parent->children[i] == motion)
+            {
+                motion->parent->children.erase(motion->parent->children.begin() + i);
+                break;
+            }
+    }
+
+    /* remove children */
+    for (auto &i : motion->children)
+    {
+        i->parent = nullptr;
+        removeMotion(tree, i);
+    }
+
+    if (motion->state != nullptr)
+        si_->freeState(motion->state);
+    delete motion;
+}
+
+// grow
+bool ompl::geometric::BiLSC::isValid(const base::State *state, base::SafetyCertificate *&csc)
+{
+    csc = nullptr;
+
+    base::SafetyCertificate *sc = new base::SafetyCertificate(si_);
+    si_->copyState(sc->state, state);
+
+    if (onn_->size() > 0)
+    {
+        std::vector<base::SafetyCertificate *> nsc;
+        bool osc = false;
+
+        onn_->nearestK(sc, collisionConfidence_, nsc);
+
+        collisionCertificateChecker_(sc->state, nsc, osc, csc);
+
+        if (osc)
+        {	
+            si_->freeState(sc->state);
+            delete sc->contact;
+            delete sc;
+
+            return false;
+        }
+    }
+
+    double dist = 0.0;
+    bool valid = true;
+
+    if (si_->isValid(sc->state, *sc->contact, dist))
+    {
+        sc->confidence_ = confidence_;
+        snn_->add(sc);
+        csc = sc;
+        delete sc->contact;
+        sc->contact = nullptr;
+    }
+    else
+    {			
+        valid = false;
+        if (dist < 0.0)
+        {
+            onn_->add(sc);
+        }
+        else 
+        {
+            si_->freeState(sc->state);
+            delete sc->contact;
+            delete sc;
+        }
+    }
+
+    return valid;
+}
+
+bool ompl::geometric::BiLSC::isValidExact(const base::State *state, base::SafetyCertificate *&csc)
+{
+    csc = nullptr;
+
+    base::SafetyCertificate *sc = new base::SafetyCertificate(si_);
+    si_->copyState(sc->state, state);
+
+    bool valid = true;
+    double dist = 0.0;
+    
+    if (si_->isValid(sc->state, *sc->contact, dist))
+    {
+        sc->confidence_ = confidence_;
+        snn_->add(sc);
+        csc = sc;
+        delete sc->contact;
+        sc->contact = nullptr;
+    }
+    else
+    {			
+        valid = false;
+        if (dist < 0.0)
+        {
+            onn_->add(sc);
+        }
+        else 
+        {
+            si_->freeState(sc->state);
+            delete sc->contact;
+            delete sc;
+        }
+    }
+
+    return valid;
+}
+
+// check
+bool ompl::geometric::BiLSC::checkInterMotion(Motion *motion1, Motion *motion2)
+{
+    /*assume motion1, motion2 are valid*/
+    bool result = true;
+
+    const base::State *s1 = motion1->state, *s2 = motion2->state;
+
+    int nd = si_->getStateSpace()->validSegmentCount(s1, s2);
+
+    if (nd >= 2)
+    {
+        std::queue<std::pair<int, int>> pos;
+        pos.emplace(1, nd - 1);
+
+        /* temporary storage for the checked state */
+        base::State *test = si_->allocState();
+
+        bool first = true;
+
+        /* repeatedly subdivide the path segment in the middle (and check the middle) */
+        while (!pos.empty())
+        {
+            std::pair<int, int> x = pos.front();
+
+            int mid = (x.first + x.second) / 2;
+            si_->getStateSpace()->interpolate(s1, s2, (double)mid / (double)nd, test);
+
+            if (first && onn_->size() > 0)
+            {
+                first = false;
+
+                base::SafetyCertificate *sc = new base::SafetyCertificate(si_), *csc;
+                si_->copyState(sc->state, test);
+
+                std::vector<base::SafetyCertificate *> nsc;
+                bool osc = false;
+
+                onn_->nearestK(sc, 1, nsc);
+
+                collisionCertificateChecker_(sc->state, nsc, osc, csc);
+
+                si_->freeState(sc->state);
+                delete sc->contact;
+                delete sc;
+
+                if (osc)
+                {	
+                    result = false;
+                    break;
+                }
+            }
+
+            if (!si_->isValid(test))
+            {
+                result = false;
+                break;
+            }
+
+            pos.pop();
+
+            if (x.first < mid)
+                pos.emplace(x.first, mid - 1);
+            if (x.second > mid)
+                pos.emplace(mid + 1, x.second);
+        }
+
+        si_->freeState(test);
+    }
+
+    return result;
+}
+
+bool ompl::geometric::BiLSC::isValid(Motion *motion)
+{
+    if (!motion->stateValid)
+    {
+        const base::State *state = motion->state;
+        base::SafetyCertificate *sc = motion->sc;
+
+        if (si_->isValid(state))
+        {
+            sc->valid_++;
+            motion->stateValid = true;
+            return true;
+        }
+        else 
+        {
+            sc->valid_ = 0;
+            if (sc->lockConfidence_)
+            {
+                if (sc->estates_.size() < 10)
+                {
+                    double erange = 0.05 * si_->distance(sc->state, state);
+                    sc->erange_.push_back(erange);
+
+                    base::State *estate = si_->allocState();
+                    si_->copyState(estate, state);
+                    sc->estates_.push_back(estate);
+                }
+                else 
+                {
+                    double dist = sc->confidence_;
+                    unsigned int best = 0;
+                    for (unsigned int i = 0; i < sc->estates_.size(); i++)
+                    {
+                        double tempd = si_->distance(sc->estates_[i], state);
+                        if (tempd < dist)
+                        {
+                            dist = tempd;
+                            best = i;
+                        }
+                    }
+                    sc->erange_[best] = 1.2 * dist;
+                }
+            }
+
+            return false;
+        }
+    }
+    else
+        return true;
+}
+
+bool ompl::geometric::BiLSC::checkStartMotion(Motion *motion1, Motion *motion2, bool &stateValid)
+{
+    stateValid = isValid(motion1);
+
+    if (!stateValid)
+        return false;
+
+    if (!motion2->valid)
+    {
+        if (!isValid(motion2))
+            return false;
+
+        return checkInterMotion(motion1, motion2);
+    }
+    else 
+        return true;
+}
+
+bool ompl::geometric::BiLSC::checkGoalMotion(Motion *motion1, Motion *motion2, bool &stateValid)
+{
+    stateValid = isValid(motion2);
+
+    if (!stateValid)
+        return false;
+
+    if (!motion1->valid)
+    {
+        if (!isValid(motion1))
+            return false;
+
+        return checkInterMotion(motion1, motion2);
+    }
+    else 
+        return true;
+}
+
+void ompl::geometric::BiLSC::getPlannerData(base::PlannerData &data) const
+{
+    Planner::getPlannerData(data);
+
+    std::vector<Motion *> motions;
+    if (tStart_)
+        tStart_->list(motions);
+
+    for (auto & motion : motions)
+    {
+        if (motion->parent == nullptr)
+            data.addStartVertex(base::PlannerDataVertex(motion->state, 1));
+        else
+        {
+            data.addEdge(base::PlannerDataVertex(motion->parent->state, 1), base::PlannerDataVertex(motion->state, 1));
+        }
+    }
+
+    motions.clear();
+    if (tGoal_)
+        tGoal_->list(motions);
+
+    for (auto & motion : motions)
+    {
+        if (motion->parent == nullptr)
+            data.addGoalVertex(base::PlannerDataVertex(motion->state, 2));
+        else
+        {
+            // The edges in the goal tree are reversed to be consistent with start tree
+            data.addEdge(base::PlannerDataVertex(motion->state, 2), base::PlannerDataVertex(motion->parent->state, 2));
+        }
+    }
+}
+

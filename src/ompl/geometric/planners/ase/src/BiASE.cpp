@@ -57,6 +57,8 @@ ompl::geometric::BiASE::BiASE(const base::SpaceInformationPtr &si) : base::Plann
     Planner::declareParam<bool>("use_bispace", this, &BiASE::setUseBispace, &BiASE::getUseBispace, "0,1");
 //    Planner::declareParam<bool>("use_biasgrow", this, &BiASE::setUseBiasGrow, &BiASE::getUseBiasGrow, "0,1");
 //    Planner::declareParam<bool>("treated_as_multi_subapce", this, &BiASE::setTreatedAsMultiSubapce, &BiASE::getTreatedAsMultiSubapce, "0,1");
+    Planner::declareParam<bool>("update_nbhcell", this, &BiASE::setUpdateNbCell, &BiASE::getUpdateNbCell, "0,1");
+    Planner::declareParam<bool>("add_inter_states", this, &BiASE::setAddIntermediateState, &BiASE::getAddIntermediateState, "0,1");
 
     Planner::declareParam<bool>("informed_sampling", this, &BiASE::setInformedSampling, &BiASE::getInformedSampling, "0,1");
     Planner::declareParam<bool>("sample_rejection", this, &BiASE::setSampleRejection, &BiASE::getSampleRejection, "0,1");
@@ -97,8 +99,6 @@ void ompl::geometric::BiASE::setup()
     sc.configureProjectionEvaluator(projectionEvaluator_);
     dStart_.setDimension(projectionEvaluator_->getDimension());
     dGoal_.setDimension(projectionEvaluator_->getDimension());
-    dStart_.useNeighbor(false);
-    dGoal_.useNeighbor(false);
     dStart_.setNeighborCell(2);
     dGoal_.setNeighborCell(2);
 
@@ -221,6 +221,8 @@ void ompl::geometric::BiASE::clear()
     startAdInfProb_ = 0.0;
     tree_ = -1;
     localRatio_ = 0.75;
+
+    ais_ = false;
 }
 
 ompl::base::PlannerStatus ompl::geometric::BiASE::solve(const base::PlannerTerminationCondition &ptc)
@@ -242,7 +244,6 @@ ompl::base::PlannerStatus ompl::geometric::BiASE::solve(const base::PlannerTermi
 
     Motion *startAd = nullptr, *goalAd = nullptr;
     bool reverse = false;
-    bool ais = false;
     unsigned int adinfcount = 0;
 
     while (!ptc && !solved)
@@ -294,7 +295,7 @@ ompl::base::PlannerStatus ompl::geometric::BiASE::solve(const base::PlannerTermi
                 bestGoalMotion = goalAd;
                 solved = true;
             }
-            else if (!ais && !checkedStartPath_.empty() && !checkedGoalPath_.empty())
+            else if (!ais_ && !checkedStartPath_.empty() && !checkedGoalPath_.empty())
             {
                 bool locals = false, localg = false;
                 localInfeasible(tree_, locals, localg);
@@ -344,8 +345,8 @@ ompl::base::PlannerStatus ompl::geometric::BiASE::solve(const base::PlannerTermi
         if (solved)
             break;
 
-        processAdEllipsoidRind(clearoradd, ais, adinfcount);
-        if (!ais) 
+        processAdEllipsoidRind(clearoradd, adinfcount);
+        if (!ais_) 
             startAd = goalAd = nullptr;
     }
 
@@ -584,7 +585,7 @@ bool ompl::geometric::BiASE::growTreeSingleSpace(TreeGrowingInfo &tgi, Motion *r
             }
         }
 
-        if (!isValid(dstate))
+        if (!isValid(dstate)) // todo
         {
             reach = false;
             break;
@@ -617,11 +618,12 @@ bool ompl::geometric::BiASE::growTreeSingleSpace(TreeGrowingInfo &tgi, Motion *r
         Coord xcoord(projectionEvaluator_->getDimension());
         projectionEvaluator_->computeCoordinates(motion->state, xcoord);
         addToDisc(disc, motion, xcoord);
+
         if (rewireSort_)
         {
             if (!motion->cell->data->cmotion || opt_->isCostBetterThan(motion->cost, motion->cell->data->cmotion->cost))
                 motion->cell->data->cmotion = motion;
-            if (!motion->cell->data->mmotion || !opt_->isCostBetterThan(motion->cost, motion->cell->data->mmotion->cost))
+            if (!motion->cell->data->mmotion || opt_->isCostBetterThan(motion->cell->data->mmotion->cost, motion->cost))
                 motion->cell->data->mmotion = motion;
         }
         if (tgi.start ? !pnullStartMotions_.empty() : !pnullGoalMotions_.empty())
@@ -801,7 +803,7 @@ bool ompl::geometric::BiASE::growTreeMultiSpace(TreeGrowingInfo &tgi, Motion *rm
         {
             if (!motion->cell->data->cmotion || opt_->isCostBetterThan(motion->cost, motion->cell->data->cmotion->cost))
                 motion->cell->data->cmotion = motion;
-            if (!motion->cell->data->mmotion || !opt_->isCostBetterThan(motion->cost, motion->cell->data->mmotion->cost))
+            if (!motion->cell->data->mmotion || opt_->isCostBetterThan(motion->cell->data->mmotion->cost, motion->cost))
                 motion->cell->data->mmotion = motion;
         }
         if (tgi.start ? !pnullStartMotions_.empty() : !pnullGoalMotions_.empty())
@@ -1113,14 +1115,15 @@ bool ompl::geometric::BiASE::backPathRewireMotion(Motion *motion, bool start, Mo
     bool valid = false;
     OrderCellsByCost ocbc(opt_);
     CellDiscretizationData &disc = start ? dStart_ : dGoal_;
-    for (auto & cv : motion->cell->nbh)
+    std::size_t cnbh = motion->cell->nbh.size();
+    for (std::size_t cindex = 0; cindex < cnbh; cindex++)
     {
-        std::size_t numc = cv.size(), ic = numc - 1;
+        std::size_t numc = motion->cell->nbh[cindex].size(), ic = numc - 1;
         while (ic < numc)
         {
             if (ic)
-                std::sort(cv.begin(), cv.begin() + ic + 1, ocbc);
-            Cell *c = cv[ic];
+                std::sort(motion->cell->nbh[cindex].begin(), motion->cell->nbh[cindex].begin() + ic + 1, ocbc);
+            Cell *c = motion->cell->nbh[cindex][ic];
             ic--;
             std::size_t num = c->data->motions.size() - c->data->disabled;
             if (!num)
@@ -1148,8 +1151,6 @@ bool ompl::geometric::BiASE::backPathRewireMotion(Motion *motion, bool start, Mo
             }
             for (auto & nb : nbh)
             {
-                if (!opt_->isFinite(nb->cost))
-                    continue;
                 if (isInvalidNeighbor(motion, nb))
                     continue;
                 if (!isValidNeighbor(motion, nb))
@@ -1157,7 +1158,8 @@ bool ompl::geometric::BiASE::backPathRewireMotion(Motion *motion, bool start, Mo
                     if (checkInterMotion(nb, motion, start))
                     {
                         insertNeighbor(nb, motion);
-                        disc.updateNbh(nb->cell, motion->cell);
+                        if (updateNbCell_)
+                            disc.updateNbh(nb->cell, motion->cell);
                     }
                     else
                     {
@@ -1255,7 +1257,7 @@ void ompl::geometric::BiASE::enableMotionInDisc(Motion *motion)
     {
         if (!motion->cell->data->cmotion || opt_->isCostBetterThan(motion->cost, motion->cell->data->cmotion->cost))
             motion->cell->data->cmotion = motion;
-        if (!motion->cell->data->mmotion || !opt_->isCostBetterThan(motion->cost, motion->cell->data->mmotion->cost))
+        if (!motion->cell->data->mmotion || opt_->isCostBetterThan(motion->cell->data->mmotion->cost, motion->cost))
             motion->cell->data->mmotion = motion;
     }
     for (auto & child : motion->children)
@@ -1435,7 +1437,8 @@ bool ompl::geometric::BiASE::checkMotion(Motion *pmotion, Motion *motion, bool s
             motion->valid = true;
             insertNeighbor(pmotion, motion);
             CellDiscretizationData &disc = start ? dStart_ : dGoal_;
-            disc.updateNbh(pmotion->cell, motion->cell);
+            if (updateNbCell_)
+                disc.updateNbh(pmotion->cell, motion->cell);
         }
     }
     return motion->valid;
@@ -1473,7 +1476,7 @@ bool ompl::geometric::BiASE::checkInterMotion1(Motion *smotion, Motion *gmotion,
             }
             ratio += delta;
         }
-        if (!valid && addIntermediateState_ && ratio * dist > 0.25 * maxDistance_)
+        if (!valid && addIntermediateState_ && ratio > 0.5 && ratio * dist > 0.25 * maxDistance_)
         {
             ratio -= delta;
             Motion *last = new Motion(si_);
@@ -1507,7 +1510,7 @@ bool ompl::geometric::BiASE::checkInterMotion2(Motion *smotion, Motion *gmotion,
             }
             ratio -= delta;
         }
-        if (!valid && addIntermediateState_ && ratio * dist < 0.75 * maxDistance_)
+        if (!valid && addIntermediateState_ && ratio < 0.5 && (1.0 - ratio) * dist > 0.25 * maxDistance_)
         {
             ratio += delta;
             Motion *last = new Motion(si_);
@@ -1534,13 +1537,14 @@ void ompl::geometric::BiASE::addIntermediateMotion(Motion *pmotion, Motion *moti
     if (!opt_->isFinite(last->cost))
         last->cell->data->disabled++;
     insertNeighbor(last, pmotion);
-    disc.updateNbh(last->cell, pmotion->cell);
+    if (updateNbCell_)
+        disc.updateNbh(last->cell, pmotion->cell);
     insertInvalidNeighbor(last, motion);
     if (rewireSort_)
     {
         if (!last->cell->data->cmotion || opt_->isCostBetterThan(last->cost, last->cell->data->cmotion->cost))
             last->cell->data->cmotion = last;
-        if (!last->cell->data->mmotion || !opt_->isCostBetterThan(last->cost, last->cell->data->mmotion->cost))
+        if (!last->cell->data->mmotion || opt_->isCostBetterThan(last->cell->data->mmotion->cost, last->cost))
             last->cell->data->mmotion = last;
     }
 }
@@ -1554,6 +1558,8 @@ void ompl::geometric::BiASE::getPlannerData(base::PlannerData &data) const
         tStart_->list(motions);
     for (auto & motion : motions)
     {
+        if (!opt_->isFinite(motion->cost))
+            continue;
         if (motion->parent == nullptr)
             data.addStartVertex(base::PlannerDataVertex(motion->state, 1));
         else
@@ -1567,6 +1573,8 @@ void ompl::geometric::BiASE::getPlannerData(base::PlannerData &data) const
         tGoal_->list(motions);
     for (auto & motion : motions)
     {
+        if (!opt_->isFinite(motion->cost))
+            continue;
         if (motion->parent == nullptr)
             data.addGoalVertex(base::PlannerDataVertex(motion->state, 2));
         else
@@ -1580,7 +1588,7 @@ void ompl::geometric::BiASE::getPlannerData(base::PlannerData &data) const
 // adaptive informed sampling
 bool ompl::geometric::BiASE::batchGrow(bool &startTree)
 {
-    bool add = false;
+    bool add = false; // add a new random sample
     TreeGrowingInfo tgi;
     tgi.xstate = si_->allocState();
     Motion *rmotion = new Motion(si_);
@@ -1860,7 +1868,7 @@ bool ompl::geometric::BiASE::isPathValidInter(Motion *motion, bool start) // bac
 }
 */
 
-void ompl::geometric::BiASE::processAdEllipsoidRind(bool clearoradd, bool &ais, unsigned int &adinfcount)
+void ompl::geometric::BiASE::processAdEllipsoidRind(bool clearoradd, unsigned int &adinfcount)
 {
     if (clearoradd)
     {
@@ -1871,17 +1879,17 @@ void ompl::geometric::BiASE::processAdEllipsoidRind(bool clearoradd, bool &ais, 
         goalAdElems_.clear();
 
         calculateInfProb(false);
-        ais = true;
+        ais_ = true;
         adinfcount = 0;
     }
-    else if (ais)
+    else if (ais_)
     {
         adinfcount++;
         if (adinfcount == 100) // todo
         {
             clearStartAdInfSampler();
             clearGoalAdInfSampler();
-            ais = false;
+            ais_ = false;
             tree_ = -1;
             startAdInfProb_ = -1.0;
         }
@@ -1917,7 +1925,7 @@ void ompl::geometric::BiASE::processAdEllipsoidRind(bool clearoradd, bool &ais, 
                     sampler->update(factor_);
                 for (auto & sampler : goalAdInfSamplers_)
                     sampler->update(factor_);
-                calculateInfProb(true);
+//                calculateInfProb(true);
             }
         }
     }

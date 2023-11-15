@@ -1,0 +1,319 @@
+/*********************************************************************
+* Software License Agreement (BSD License)
+*
+*  Copyright (c) 2008, Willow Garage, Inc.
+*  All rights reserved.
+*
+*  Redistribution and use in source and binary forms, with or without
+*  modification, are permitted provided that the following conditions
+*  are met:
+*
+*   * Redistributions of source code must retain the above copyright
+*     notice, this list of conditions and the following disclaimer.
+*   * Redistributions in binary form must reproduce the above
+*     copyright notice, this list of conditions and the following
+*     disclaimer in the documentation and/or other materials provided
+*     with the distribution.
+*   * Neither the name of the Willow Garage nor the names of its
+*     contributors may be used to endorse or promote products derived
+*     from this software without specific prior written permission.
+*
+*  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+*  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+*  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+*  FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+*  COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+*  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+*  BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+*  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+*  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+*  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+*  ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+*  POSSIBILITY OF SUCH DAMAGE.
+*********************************************************************/
+
+/* Author: Shi Shenglei */
+
+#ifndef OMPL_GEOMETRIC_PLANNERS_LSC_SLSC_
+#define OMPL_GEOMETRIC_PLANNERS_LSC_SLSC_
+
+#include "ompl/geometric/planners/PlannerIncludes.h"
+#include "ompl/datastructures/GridNearest.h"
+#include "ompl/datastructures/PDF.h"
+#include "ompl/base/ProjectionEvaluator.h"
+#include "ompl/geometric/planners/lsc/CollisionChecking.h"
+
+#include <vector>
+
+namespace ompl
+{
+    namespace geometric
+    {
+        class SLSC : public base::Planner, geometric::CollisionChecking
+        {
+        public:
+            /** \brief The constructor needs the instance of the space information */
+            SLSC(const base::SpaceInformationPtr &si, const SafetyCertificateChecker &safetyCertificateChecker,
+                 const CollisionCertificateChecker &collisionCertificateChecker, double confidence = 1.0);
+
+            ~SLSC() override;
+
+            void setup() override;
+
+            base::PlannerStatus solve(const base::PlannerTerminationCondition &ptc) override;
+
+            void clear() override;
+
+            void getPlannerData(base::PlannerData &data) const override;
+
+            /** \brief Set the range the planner is supposed to use.
+
+                This parameter greatly influences the runtime of the
+                algorithm. It represents the maximum length of a
+                motion to be added in the tree of motions. */
+            void setRange(double distance)
+            {
+                maxDistance_ = distance;
+            }
+
+            /** \brief Get the range the planner is using */
+            double getRange() const
+            {
+                return maxDistance_;
+            }
+
+            void setCollisionConfidence(unsigned int c)
+            {
+                CollisionChecking::setCollisionConfidence(c);
+            }
+
+            unsigned int getCollisionConfidence() const
+            {
+                return CollisionChecking::getCollisionConfidence();
+            }
+
+            void setSafetyConfidence(unsigned int s)
+            {
+                CollisionChecking::setSafetyConfidence(s);
+            }
+
+            unsigned int getSafetyConfidence() const 
+            {
+                return CollisionChecking::getSafetyConfidence();
+            }
+
+            /** \brief Set the projection evaluator. This class is
+                able to compute the projection of a given state. */
+            void setProjectionEvaluator(const base::ProjectionEvaluatorPtr &projectionEvaluator)
+            {
+                projectionEvaluator_ = projectionEvaluator;
+            }
+
+            /** \brief Set the projection evaluator (select one from
+                the ones registered with the state space). */
+            void setProjectionEvaluator(const std::string &name)
+            {
+                projectionEvaluator_ = si_->getStateSpace()->getProjection(name);
+            }
+
+            /** \brief Get the projection evaluator. */
+            const base::ProjectionEvaluatorPtr &getProjectionEvaluator() const
+            {
+                return projectionEvaluator_;
+            }
+
+            /** \brief Set a different nearest neighbors datastructure */
+//            template <template <typename T> class NN>
+//            void setNearestNeighbors()
+//            {
+//                if (tStart_.size != 0 || tGoal_.size != 0)
+//                    OMPL_WARN("Calling setNearestNeighbors will clear all states.");
+//                clear();
+//
+//                tStart_.grid.setDimension(projectionEvaluator_->getDimension());
+//                tGoal_.grid.setDimension(projectionEvaluator_->getDimension());
+//
+//				snn_ = std::make_shared<NN<SafetyCertificate *>>();
+//				onn_ = std::make_shared<NN<SafetyCertificate *>>();
+//                setup();
+//            }
+
+        protected:
+
+            class Motion
+            {
+            public:
+                Motion() = default;
+
+                Motion(const base::SpaceInformationPtr &si) : state(si->allocState())
+                {
+                }
+
+                ~Motion() = default;
+
+                base::State *state{nullptr};
+
+                const base::State *root{nullptr};
+
+                Motion *parent{nullptr};
+
+                bool valid{false};
+
+                bool stateValid{false};
+
+                unsigned int nd{0};
+
+                bool inConnection{false};
+
+                base::Cost incCost;
+
+                base::Cost cost;
+
+                std::vector<int> stepValid;
+
+                std::vector<Motion *> children;
+            };
+
+            /** \brief Compute distance between motions (actually distance between contained states) */
+            double distanceFunction(const Motion *a, const Motion *b) const
+            {
+                return csi_->distance(a->state, b->state);
+            }
+
+            double distanceFunction(const base::SafetyCertificate *a, const base::SafetyCertificate *b) const
+            {
+                return csi_->distance(a->state, b->state);
+            }
+
+
+            struct MotionInfo;
+
+            /** \brief A grid cell */
+            using GridCell = GridNearest<MotionInfo, Motion*>::Cell;
+
+            /** \brief A PDF of grid cells */
+            using CellPDF = PDF<GridCell *>;
+
+            /** \brief A struct containing an array of motions and a corresponding PDF element */
+            struct MotionInfo
+            {
+                Motion *operator[](unsigned int i)
+                {
+                    return motions_[i];
+                }
+                std::vector<Motion *>::iterator begin()
+                {
+                    return motions_.begin();
+                }
+                std::vector<Motion *>::iterator end()
+                {
+                    return motions_.end();
+                }
+                void erase(std::vector<Motion *>::iterator iter)
+                {
+                    motions_.erase(iter);
+                }
+                void push_back(Motion *m)
+                {
+                    motions_.push_back(m);
+                }
+                unsigned int size() const
+                {
+                    return motions_.size();
+                }
+                bool empty() const
+                {
+                    return motions_.empty();
+                }
+
+                std::vector<Motion *> motions_;
+                CellPDF::Element *elem_;
+            };
+
+            /** \brief Representation of a search tree. Two instances will be used. One for start and one for goal */
+            struct TreeData
+            {
+                TreeData() = default;
+
+                /** \brief The grid of motions corresponding to this tree */
+                GridNearest<MotionInfo, Motion*> grid{0};
+
+                /** \brief The number of motions (in total) from the tree */
+                unsigned int size{0};
+
+                /** \brief The PDF used for selecting a cell from which to sample a motion */
+                CellPDF pdf;
+
+                double minWeight{1.0};
+                double maxWeight{0.0};
+            };
+
+            /** \brief Information attached to growing a tree of motions (used internally) */
+            struct TreeGrowingInfo
+            {
+                base::State *xstate;
+                Motion *xmotion;
+                bool start;
+            };
+
+            /** \brief The state of the tree after an attempt to extend it */
+            enum GrowState
+            {
+                /// no progress has been made
+                TRAPPED,
+                /// progress has been made towards the randomly sampled state
+                ADVANCED,
+                /// the randomly sampled state was reached
+                REACHED
+            };
+
+            /** \brief Free the memory allocated by the planner */
+            void freeMemory();
+
+            /** \brief Free the memory used by the motions contained in a grid */
+            void freeGridMotions(GridNearest<MotionInfo, Motion*> &grid);
+
+            /** \brief The first step is omitted to check its collision status, while the other steps are checked by lazy method*/
+            GrowState growTree(TreeData &tree, TreeGrowingInfo &tgi, Motion *rmotion);
+
+            /** \brief Add a motion to a tree */
+            void addMotion(TreeData &tree, Motion *motion);
+
+            /** \brief Select a motion from a tree */
+            Motion *selectMotion(TreeData &tree);
+
+            bool isPathValid(TreeData &tree, TreeData &otherTree, Motion *motion, Motion *otherMotion);
+
+            /** \brief Remove a motion from a tree */
+            void removeMotion(TreeData &tree, Motion *motion);
+
+            /** \brief The employed state sampler */
+            base::StateSamplerPtr sampler_;
+
+            /** \brief The employed projection evaluator */
+            base::ProjectionEvaluatorPtr projectionEvaluator_;
+
+            /** \brief The start tree */
+            TreeData tStart_;
+
+            /** \brief The goal tree */
+            TreeData tGoal_;
+
+            /** \brief The maximum length of a motion to be added in the tree */
+            double maxDistance_{0.};
+
+            /** \brief The random number generator to be used */
+            RNG rng_;
+
+            /** \brief The pair of states in each tree connected during planning.  Used for PlannerData computation */
+            std::pair<base::State *, base::State *> connectionPoint_{nullptr, nullptr};
+
+            /** \brief Distance between the nearest pair of start tree and goal tree nodes. */
+            double distanceBetweenTrees_;
+        private:
+            bool symmetric_;
+        };
+    }
+}
+
+#endif

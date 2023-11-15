@@ -41,7 +41,7 @@
 
 #include "ompl/datastructures/NearestNeighbors.h"
 #include "ompl/datastructures/BinaryHeap.h"
-#include "ompl/datastructures/GridN.h"
+#include "ompl/datastructures/GridNR.h"
 #include "ompl/datastructures/Grid.h"
 #include "ompl/datastructures/PDF.h"
 
@@ -170,6 +170,16 @@ namespace ompl
                 return rewireSort_;
             }
 
+            void setUpdateNbCell(bool update)
+            {
+                updateNbCell_ = update;
+            }
+
+            bool getUpdateNbCell() const
+            {
+                return updateNbCell_;
+            }
+
             void setPruneThreshold(const double pp)
             {
                 pruneThreshold_ = pp;
@@ -244,7 +254,7 @@ namespace ompl
                 std::size_t disabled{0};
             };
 
-            using CellDiscretizationData = GridN<CellData *>;
+            using CellDiscretizationData = GridNR<CellData *>;
             using Cell = CellDiscretizationData::Cell;
             using Coord = CellDiscretizationData::Coord;
 
@@ -582,6 +592,8 @@ namespace ompl
 
             bool symmetric_{true};
 
+            bool updateNbCell_{false};
+
             /** \brief Objective we're optimizing */
             base::OptimizationObjectivePtr opt_;
 
@@ -597,7 +609,7 @@ namespace ompl
             ////////////////////////////////////////////////////////////////////////////////////////////////////
             // optimal 
             /** \brief Check if a better path is found */
-            bool findBetterSolution(Motion *startAd, Motion *goalAd, bool &ad, bool ais, bool &clearoradd, bool &optimal, double &ratio1, double &maxratio1, unsigned int &connect1, double &connectTresh1);
+            bool findBetterSolution(Motion *startAd, Motion *goalAd, bool &ad, bool ais, bool &clearoradd, bool &optimal);
 
             void rewirePath();
 
@@ -659,6 +671,10 @@ namespace ompl
 
             /** \brief The cost at which the graph was last pruned */
             base::Cost prunedCost_{std::numeric_limits<double>::quiet_NaN()};
+
+            base::Cost currentStartCost_{std::numeric_limits<double>::quiet_NaN()};
+
+            base::Cost currentGoalCost_{std::numeric_limits<double>::quiet_NaN()};
 
             /** \brief The tree is pruned when the change in solution cost is greater than this fraction. */
             double pruneThreshold_{0.05};
@@ -774,7 +790,7 @@ namespace ompl
             using NumPdf = PDF<std::size_t>;
             using NumElem = NumPdf::Element;
             
-            void processAdEllipsoidRind(bool clearoradd, bool &ais, unsigned int &adinfcount);
+            void processAdEllipsoidRind(bool clearoradd, bool &ais);
 
             /** \brief Create the samplers */
             base::AdInformedSamplerPtr allocInfSampler(const base::State *s1, const base::State *s2,
@@ -837,8 +853,6 @@ namespace ompl
             NumPdf goalAdInfPdf_;
             std::vector<NumElem *> goalAdElems_;
 
-            double startAdInfProb_{0.0};
-
             double localRatio_{0.75};
 
             double factor_{1.1};
@@ -897,13 +911,9 @@ namespace ompl
             NumPdf goalInfPdf_;
             std::vector<NumElem *> goalElems_;
 
-            double startInfProb_{0.0};
-
             bool guniform_{true};
 
-        private:
-            double growTime_{0.0};
-            double pathTime_{0.0};
+            unsigned int adinfcount_{0}, infcount_{0};
         };
     }
 }

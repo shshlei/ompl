@@ -48,12 +48,8 @@ ompl::geometric::BiHSC::BiHSC(const base::SpaceInformationPtr &si) : base::Plann
 
     Planner::declareParam<double>("range", this, &BiHSC::setRange, &BiHSC::getRange, "0.:0.1:10000.");
     Planner::declareParam<double>("pen_distance", this, &BiHSC::setPenDistance, &BiHSC::getPenDistance, "0.:0.1:10000.");
-    Planner::declareParam<bool>("lazy_path", this, &BiHSC::setLazyPath, &BiHSC::getLazyPath, "0,1");
     Planner::declareParam<bool>("lazy_node", this, &BiHSC::setLazyNode, &BiHSC::getLazyNode, "0,1");
     Planner::declareParam<bool>("use_bispace", this, &BiHSC::setUseBispace, &BiHSC::getUseBispace, "0,1");
-//    Planner::declareParam<bool>("use_biasgrow", this, &BiHSC::setUseBiasGrow, &BiHSC::getUseBiasGrow, "0,1");
-//    Planner::declareParam<bool>("treated_as_multi_subapce", this, &BiHSC::setTreatedAsMultiSubapce, &BiHSC::getTreatedAsMultiSubapce, "0,1");
-    Planner::declareParam<bool>("rewire", this, &BiHSC::setRewire, &BiHSC::getRewire, "0,1");
     Planner::declareParam<bool>("use_collision_sc", this, &BiHSC::setUseCollisionCertificateChecker, &BiHSC::getUseCollisionCertificateChecker, "0,1");
 }
 
@@ -66,45 +62,13 @@ void ompl::geometric::BiHSC::setup()
 {
     Planner::setup();
     tools::SelfConfig sc(si_, getName());
-    if (treatedAsMultiSubapce_)
-    {
-        maxDistance_ = penDistance_ = 0.0;
-        sc.configurePlannerRange(maxDistance_);
-        sc.configurePenetrationDistance(penDistance_);
-        auto cs = si_->getStateSpace()->as<base::CompoundStateSpace>();
-        maxDistanceV_.resize(cs->getSubspaceCount());
-        penDistanceV_.resize(cs->getSubspaceCount());
-        double ratio = maxDistance_ / cs->getMaximumExtent();
-        for (std::size_t i = 0; i < maxDistanceV_.size(); i++)
-            maxDistanceV_[i] = ratio * cs->getSubspace(i)->getMaximumExtent();
-        ratio = penDistance_ / cs->getMaximumExtent();
-        for (std::size_t i = 0; i < penDistanceV_.size(); i++)
-            penDistanceV_[i] = ratio * cs->getSubspace(i)->getMaximumExtent();
-    }
-    else 
-    {
-        sc.configurePlannerRange(maxDistance_);
-        sc.configurePenetrationDistance(penDistance_);
-    }
-
+    sc.configurePlannerRange(maxDistance_);
+    sc.configurePenetrationDistance(penDistance_);
     sc.configureProjectionEvaluator(projectionEvaluator_);
-    if (rewire_)
-    {
-        dStart_.setDimension(projectionEvaluator_->getDimension());
-        dGoal_.setDimension(projectionEvaluator_->getDimension());
-        dStart_.useNeighbor(false);
-        dGoal_.useNeighbor(false);
-        dStart_.setNeighborCell(2);
-        dGoal_.setNeighborCell(2);
-    }
-
-    /*
-    if (useBiasGrow_)
-    {
-        startBiasPdf_.grid.setDimension(projectionEvaluator_->getDimension());
-        goalBiasPdf_.grid.setDimension(projectionEvaluator_->getDimension());
-    }
-    */
+    dStart_.setDimension(projectionEvaluator_->getDimension());
+    dGoal_.setDimension(projectionEvaluator_->getDimension());
+    dStart_.setNeighborCell(2);
+    dGoal_.setNeighborCell(2);
 
     if (!tStart_)
         tStart_.reset(tools::SelfConfig::getDefaultNearestNeighbors<Motion *>(this));
@@ -137,16 +101,6 @@ void ompl::geometric::BiHSC::setup()
         setup_ = false;
     }
     
-    if (lazyNode_)
-        lazyPath_ = true;
-    if (!lazyPath_)
-    {
-        lazyNode_ = false;
-        rewire_ = false;
-    }
-    if (!rewire_)
-        rewireSort_ = false;
-
     if (useCollisionCertificateChecker_)
     {
         onn_.reset(new SimpleGridSC());
@@ -174,19 +128,16 @@ void ompl::geometric::BiHSC::freeMemory()
         motions.clear();
     }
 
-    if (rewire_)
-    {
-        std::vector<Cell *> cells;
-        dStart_.getCells(cells);
-        for (auto & cell : cells)
-            delete cell->data;
-        cells.clear();
-        dGoal_.getCells(cells);
-        for (auto & cell : cells)
-            delete cell->data;
-        dStart_.clear();
-        dGoal_.clear();
-    }
+    std::vector<Cell *> cells;
+    dStart_.getCells(cells);
+    for (auto & cell : cells)
+        delete cell->data;
+    cells.clear();
+    dGoal_.getCells(cells);
+    for (auto & cell : cells)
+        delete cell->data;
+    dStart_.clear();
+    dGoal_.clear();
 
     if (lazyNode_)
     {
@@ -248,19 +199,6 @@ void ompl::geometric::BiHSC::clear()
 
     connectionPoint_.clear();
 
-    /*
-    if (useBiasGrow_)
-    {
-        startBiasPdf_.grid.clear();
-        startBiasPdf_.size = 0;
-        startBiasPdf_.pdf.clear();
-        goalBiasPdf_.grid.clear();
-        goalBiasPdf_.size = 0;
-        goalBiasPdf_.pdf.clear();
-        startBiasProb_ = goalBiasProb_ = 0.0;
-    }
-    */
-
     if (onn_)
     {
         onn_->clear();
@@ -299,16 +237,13 @@ ompl::base::PlannerStatus ompl::geometric::BiHSC::solve(const base::PlannerTermi
                 motion->cost = opt_->identityCost();
                 goalMotions_.push_back(motion);
                 tGoal_->add(motion);
-                if (rewire_)
+                Coord xcoord(projectionEvaluator_->getDimension());
+                projectionEvaluator_->computeCoordinates(motion->state, xcoord);
+                addToDisc(dGoal_, motion, xcoord);
+                if (rewireSort_)
                 {
-                    Coord xcoord(projectionEvaluator_->getDimension());
-                    projectionEvaluator_->computeCoordinates(motion->state, xcoord);
-                    addToDisc(dGoal_, motion, xcoord);
-                    if (rewireSort_)
-                    {
-                        motion->cell->data->cmotion = motion;
-                        motion->cell->data->mmotion = motion;
-                    }
+                    motion->cell->data->cmotion = motion;
+                    motion->cell->data->mmotion = motion;
                 }
                 if (lazyNode_)
                 {
@@ -335,12 +270,7 @@ ompl::base::PlannerStatus ompl::geometric::BiHSC::solve(const base::PlannerTermi
         {
             if (opt_->isFinite(pair.first->cost) && opt_->isFinite(pair.second->cost))
             {
-                bool valid = false;
-                if (rewire_)
-                    valid = isPathValid(pair.first, pair.second);
-                else 
-                    valid = isPathValid(pair.first, pair.second, !startTree);
-                if (valid)
+                if (isPathValid(pair.first, pair.second))
                 {
                     solved = true;
                     bestStartMotion = pair.first;
@@ -351,9 +281,7 @@ ompl::base::PlannerStatus ompl::geometric::BiHSC::solve(const base::PlannerTermi
         }
         if (solved)
             break;
-        if (!rewire_)
-            removeInvalidMotionsDirectly();
-        else if (lazyNode_)
+        if (lazyNode_)
             removeInvalidMotions();
     }
 
@@ -397,16 +325,13 @@ ompl::base::PlannerStatus ompl::geometric::BiHSC::prepareSolve(const base::Plann
             motion->cost = opt_->identityCost();
             startMotions_.push_back(motion);
             tStart_->add(motion);
-            if (rewire_)
+            Coord xcoord(projectionEvaluator_->getDimension());
+            projectionEvaluator_->computeCoordinates(motion->state, xcoord);
+            addToDisc(dStart_, motion, xcoord);
+            if (rewireSort_)
             {
-                Coord xcoord(projectionEvaluator_->getDimension());
-                projectionEvaluator_->computeCoordinates(motion->state, xcoord);
-                addToDisc(dStart_, motion, xcoord);
-                if (rewireSort_)
-                {
-                    motion->cell->data->cmotion = motion;
-                    motion->cell->data->mmotion = motion;
-                }
+                motion->cell->data->cmotion = motion;
+                motion->cell->data->mmotion = motion;
             }
             if (lazyNode_)
             {
@@ -443,16 +368,13 @@ ompl::base::PlannerStatus ompl::geometric::BiHSC::prepareSolve(const base::Plann
         motion->cost = opt_->identityCost();
         goalMotions_.push_back(motion);
         tGoal_->add(motion);
-        if (rewire_)
+        Coord xcoord(projectionEvaluator_->getDimension());
+        projectionEvaluator_->computeCoordinates(motion->state, xcoord);
+        addToDisc(dGoal_, motion, xcoord);
+        if (rewireSort_)
         {
-            Coord xcoord(projectionEvaluator_->getDimension());
-            projectionEvaluator_->computeCoordinates(motion->state, xcoord);
-            addToDisc(dGoal_, motion, xcoord);
-            if (rewireSort_)
-            {
-                motion->cell->data->cmotion = motion;
-                motion->cell->data->mmotion = motion;
-            }
+            motion->cell->data->cmotion = motion;
+            motion->cell->data->mmotion = motion;
         }
         if (lazyNode_)
         {
@@ -491,24 +413,6 @@ ompl::base::PlannerStatus ompl::geometric::BiHSC::prepareSolve(const base::Plann
             }
         }
         penDistance_ = std::min(penDistance_, 0.1*dist);
-
-        if (treatedAsMultiSubapce_)
-        {
-            for (std::size_t i = 0; i < si_->getStateSpace()->getSubspaceCount(); i++)
-            {
-                double dist = -1.0;
-                for (auto & sm : startMotions_)
-                {
-                    for (auto & gm : goalMotions_)
-                    {
-                        double d = si_->distance(sm->state, gm->state, i);
-                        if (dist < d)
-                            dist = d;
-                    }
-                }
-                penDistanceV_[i] = std::min(penDistanceV_[i], 0.1*dist);
-            }
-        }
     }
     return base::PlannerStatus::PREPARE_SUCCESS;
 }
@@ -610,29 +514,6 @@ bool ompl::geometric::BiHSC::batchGrow(bool &startTree)
             }
         }
 
-        /*
-        if (useBiasGrow_ && !gsc)
-        {
-            tgi.start = !startTree;
-            gsc = biasGrow(tree, tgi, addedMotion);
-            if (gsc)
-            {
-                startMotion = startTree ? addedMotion : tgi.xmotion; 
-                goalMotion = startTree ? tgi.xmotion : addedMotion;
-            }
-            else 
-            {
-                tgi.start = startTree;
-                gsc = biasGrow(otherTree, tgi, addedMotion);
-                if (gsc)
-                {
-                    startMotion = startTree ? tgi.xmotion : addedMotion;
-                    goalMotion = startTree ? addedMotion : tgi.xmotion;
-                }
-            }
-        }
-        */
-
         if (startMotion && goalMotion && pdef_->getGoal()->isStartGoalPairValid(startMotion->root, goalMotion->root))
         {
             nconnect = true;
@@ -649,8 +530,6 @@ bool ompl::geometric::BiHSC::batchGrow(bool &startTree)
 
 bool ompl::geometric::BiHSC::growTree(TreeGrowingInfo &tgi, Motion *rmotion, bool &otherSide, bool &change)
 {
-    if (treatedAsMultiSubapce_)
-        return growTreeMultiSpace(tgi, rmotion, otherSide, change);
     return growTreeSingleSpace(tgi, rmotion, otherSide, change);
 }
 
@@ -768,15 +647,6 @@ bool ompl::geometric::BiHSC::growTreeSingleSpace(TreeGrowingInfo &tgi, Motion *r
             motion->stateValid = Valid;
 
         Motion *nb = nmotion;
-        if (!lazyPath_ && !checkInterMotion(nb, motion, tgi.start))
-        {
-            removeFromInvalidNeighbor(motion);
-            freeMotion(motion);
-            freeCertificate(sc);
-            reach = false;
-            break;
-        }
-
         if (lazyNode_)
         {
             if (!lazy)
@@ -811,39 +681,25 @@ bool ompl::geometric::BiHSC::growTreeSingleSpace(TreeGrowingInfo &tgi, Motion *r
         {
             otherSide = true;
             motion->middle = true;
-            /*
-            if (useBiasGrow_ && motion->stateValid == Valid)
-            {
-                if (tgi.start)
-                    addPdfMotion(startBiasPdf_, motion, true);
-                else 
-                    addPdfMotion(goalBiasPdf_, motion, false);
-            }
-            */
         }
 
-        if (!lazyPath_)
-            motion->valid = ValidP;
-
-        if (rewire_)
+        Coord xcoord(projectionEvaluator_->getDimension());
+        projectionEvaluator_->computeCoordinates(motion->state, xcoord);
+        addToDisc(disc, motion, xcoord);
+        if (rewireSort_)
         {
-            Coord xcoord(projectionEvaluator_->getDimension());
-            projectionEvaluator_->computeCoordinates(motion->state, xcoord);
-            addToDisc(disc, motion, xcoord);
-            if (rewireSort_)
-            {
-                if (!motion->cell->data->cmotion || opt_->isCostBetterThan(motion->cost, motion->cell->data->cmotion->cost))
-                    motion->cell->data->cmotion = motion;
-                if (!motion->cell->data->mmotion || !opt_->isCostBetterThan(motion->cost, motion->cell->data->mmotion->cost))
-                    motion->cell->data->mmotion = motion;
-            }
-            if (tgi.start ? !pnullStartMotions_.empty() : !pnullGoalMotions_.empty())
-                rewireTree(bh_, motion, tgi.start);
+            if (!motion->cell->data->cmotion || opt_->isCostBetterThan(motion->cost, motion->cell->data->cmotion->cost))
+                motion->cell->data->cmotion = motion;
+            if (!motion->cell->data->mmotion || opt_->isCostBetterThan(motion->cell->data->mmotion->cost, motion->cost))
+                motion->cell->data->mmotion = motion;
         }
+        if (tgi.start ? !pnullStartMotions_.empty() : !pnullGoalMotions_.empty())
+            rewireTree(bh_, motion, tgi.start);
     }
     return reach;
 }
 
+/*
 bool ompl::geometric::BiHSC::growTreeMultiSpace(TreeGrowingInfo &tgi, Motion *rmotion, bool &otherSide, bool &change)
 {
     otherSide = false;
@@ -1025,15 +881,6 @@ bool ompl::geometric::BiHSC::growTreeMultiSpace(TreeGrowingInfo &tgi, Motion *rm
             motion->stateValid = Valid;
 
         Motion *nb = nmotion;
-        if (!lazyPath_ && !checkInterMotion(nb, motion, tgi.start))
-        {
-            removeFromInvalidNeighbor(motion);
-            freeMotion(motion);
-            freeCertificate(sc);
-            reach = false;
-            break;
-        }
-
         if (lazyNode_)
         {
             if (!lazy)
@@ -1067,38 +914,24 @@ bool ompl::geometric::BiHSC::growTreeMultiSpace(TreeGrowingInfo &tgi, Motion *rm
         if (otherSide)
         {
             motion->middle = true;
-            /*
-            if (useBiasGrow_ && motion->stateValid == Valid)
-            {
-                if (tgi.start)
-                    addPdfMotion(startBiasPdf_, motion, true);
-                else 
-                    addPdfMotion(goalBiasPdf_, motion, false);
-            }
-            */
         }
 
-        if (!lazyPath_)
-            motion->valid = ValidP;
-
-        if (rewire_)
+        Coord xcoord(projectionEvaluator_->getDimension());
+        projectionEvaluator_->computeCoordinates(motion->state, xcoord);
+        addToDisc(disc, motion, xcoord);
+        if (rewireSort_)
         {
-            Coord xcoord(projectionEvaluator_->getDimension());
-            projectionEvaluator_->computeCoordinates(motion->state, xcoord);
-            addToDisc(disc, motion, xcoord);
-            if (rewireSort_)
-            {
-                if (!motion->cell->data->cmotion || opt_->isCostBetterThan(motion->cost, motion->cell->data->cmotion->cost))
-                    motion->cell->data->cmotion = motion;
-                if (!motion->cell->data->mmotion || !opt_->isCostBetterThan(motion->cost, motion->cell->data->mmotion->cost))
-                    motion->cell->data->mmotion = motion;
-            }
-            if (tgi.start ? !pnullStartMotions_.empty() : !pnullGoalMotions_.empty())
-                rewireTree(bh_, motion, tgi.start);
+            if (!motion->cell->data->cmotion || opt_->isCostBetterThan(motion->cost, motion->cell->data->cmotion->cost))
+                motion->cell->data->cmotion = motion;
+            if (!motion->cell->data->mmotion || opt_->isCostBetterThan(motion->cell->data->mmotion->cost, motion->cost))
+                motion->cell->data->mmotion = motion;
         }
+        if (tgi.start ? !pnullStartMotions_.empty() : !pnullGoalMotions_.empty())
+            rewireTree(bh_, motion, tgi.start);
     }
     return reach && reachi;
 }
+*/
 
 ompl::geometric::BiHSC::Motion *ompl::geometric::BiHSC::selectNMotion(const TreeData &tree, Motion *rmotion, bool &null)
 {
@@ -1408,157 +1241,6 @@ double ompl::geometric::BiHSC::penetrationDistance(const base::State *nstate, co
     return d;
 }
 
-/*
-ompl::geometric::BiHSC::GrowState ompl::geometric::BiHSC::biasGrow(TreeData &tree, TreeGrowingInfo &tgi, Motion *&rmotion, bool optimal)
-{
-    GrowState gs = TRAPPED;
-
-    if (tgi.start ? goalBiasPdf_.size > 0 && rng_.uniform01() < goalBiasProb_ : startBiasPdf_.size > 0 && rng_.uniform01() < startBiasProb_)
-    {
-        GridCell *cell = nullptr; 
-        MotionPDF &motionPdf = tgi.start ? goalBiasPdf_ : startBiasPdf_;
-        rmotion = selectPdfMotion(motionPdf, cell);
-
-        if (rmotion != nullptr)
-        {
-            if (!rmotion->inConnection && opt_->isFinite(rmotion->cost))
-            {
-                bool null;
-                Motion *nmotion = selectNMotion(tree, tgi.start, rmotion, null);
-                if (opt_->isFinite(nmotion->cost) && isValid(nmotion, tgi.start))
-                {
-                    double maxDistance = maxDistance_;
-                    if (treatedAsMultiSubapce_)
-                        maxDistance *= si_->getStateSpace()->getSubspaceCount();
-                    if (tgi.start ? si_->distance(nmotion->state, rmotion->state) < maxDistance : si_->distance(rmotion->state, nmotion->state) < maxDistance)
-                    {
-                        if (checkInterMotion(nmotion, rmotion, tgi.start))
-                        {
-                            Motion *motion = new Motion(si_);
-                            si_->copyState(motion->state, rmotion->state);
-                            connectToPmotion(motion, nmotion, tgi.start);
-                            motion->stateValid = Valid;
-                            motion->valid = ValidP;
-                            motion->parent->children.push_back(motion);
-
-                            if (lazyNode_)
-                            {
-                                motion->sce = motion->parent->sce;
-                                motion->scd = distanceCertificate_(motion->state, motion->sce->sc->state);
-                                motion->sce->objects.push_back(motion);
-                            }
-
-                            if (lazyPath_ || lazyNode_ || optimal)
-                            {
-                                getNeighbors(motion, tgi.start);
-
-                                unsigned int ind = 0;
-                                if (!checkIfIn(motion->nbh, nmotion, ind))
-                                    insertNeighbor(motion, nmotion);
-
-                                if (lazyNode_)
-                                {
-                                    for (auto it = motion->nbh.begin(); it != motion->nbh.end();)
-                                    {
-                                        if (it->first->stateValid == InValid)
-                                        {
-                                            std::iter_swap(it, motion->nbh.end() - 1);
-                                            motion->nbh.pop_back();
-                                        }
-                                        else 
-                                            it++;
-                                    }
-                                }
-
-                                for (auto it = motion->nbh.begin(); it != motion->nbh.end(); ++it)
-                                    insertNeighbor(it->first, motion);
-
-                                setMotionValid(nmotion, motion);
-                            }
-
-                            tree->add(motion);
-
-                            tgi.xmotion = motion;
-
-                            gs = REACHED;
-                        }
-                    }
-                    else
-                    {
-                        bool checkConnection = true;
-                        bool otherSide = false;
-                        if (growTree(tree, tgi, rmotion, checkConnection, otherSide, optimal) == REACHED)
-                        {
-                            gs = REACHED;
-                        }
-                    } 
-                }
-            }
-
-            if(gs == REACHED)
-            {
-                double w = motionPdf.pdf.getWeight(cell->data.elem_);
-                if (w < 1.0)
-                { 
-                    w /= (1.0 - w);
-                    if (treatedAsMultiSubapce_)
-                        w *= static_cast<double>(si_->getStateSpace()->getSubspaceCount());
-                    motionPdf.pdf.update(cell->data.elem_, w);
-                }
-            }
-            else
-            {
-                double w = motionPdf.pdf.getWeight(cell->data.elem_);
-                if (treatedAsMultiSubapce_)
-                    w /= (static_cast<double>(si_->getStateSpace()->getSubspaceCount()) + w);
-                else
-                    w /= (1.0 + w);
-                motionPdf.pdf.update(cell->data.elem_, w);
-
-                if (treatedAsMultiSubapce_ ? w < 0.01 : w < 0.05)
-                {
-                    removePdfMotion(motionPdf, rmotion);
-                    rmotion->middle = false;
-                }
-            }
-
-
-            std::vector<double> weights;
-            motionPdf.pdf.getWeights(weights);
-            if (!weights.empty())
-            {
-                if (tgi.start)
-                    goalBiasProb_ = *std::max_element(weights.begin(), weights.end());
-                else 
-                    startBiasProb_ = *std::max_element(weights.begin(), weights.end());
-            }
-        }
-    }
-
-    return gs;
-}
-*/
-
-bool ompl::geometric::BiHSC::isPathValid(Motion *motion, Motion *otherMotion, bool start)
-{
-    bool valid = true;
-    if (start)
-    {
-        if (!isPathValid(motion, true))
-            valid = false;
-        else if (!isPathValid(otherMotion, false))
-            valid = false;
-    }
-    else 
-    {
-        if (!isPathValid(otherMotion, false))
-            valid = false;
-        else if (!isPathValid(motion, true))
-            valid = false;
-    }
-    return valid;
-}
-
 bool ompl::geometric::BiHSC::isPathValid(Motion *motion, Motion *otherMotion)
 {
     bool valid = true;
@@ -1571,8 +1253,6 @@ bool ompl::geometric::BiHSC::isPathValid(Motion *motion, Motion *otherMotion)
 
 bool ompl::geometric::BiHSC::isPathValid(Motion *motion, bool start)
 {
-    if (!lazyPath_)
-        return true;
     if (!isPathValidLazy(motion, start))
         return false;
     bool tvalid = true;
@@ -1594,32 +1274,27 @@ bool ompl::geometric::BiHSC::isPathValid(Motion *motion, bool start)
             removeFromParent(motion);
             motion->parent = nullptr;
             tvalid = false;
-            if (rewire_)
+            Motion *ppmotion = nullptr;
+            tvalid = backPathRewireMotion(motion, start, ppmotion);
+            std::size_t epos = invalidMotions.size();
+            for (std::size_t i = spos; i < epos; i++)
             {
-                Motion *ppmotion = nullptr;
-                tvalid = backPathRewireMotion(motion, start, ppmotion);
-                std::size_t epos = invalidMotions.size();
-                for (std::size_t i = spos; i < epos; i++)
-                {
-                    Motion *temp = invalidMotions[i];
-                    for (auto & child : temp->children)
-                        child->pmotion = pmotion;
-                }
-                if (tvalid)
-                {
-                    tvalid = isPathValidInter(ppmotion, start);
-                    connectToPmotion(motion, ppmotion, start);
-                    motion->parent->children.push_back(motion); 
-                }
-                else 
-                {
-                    pnullMotions.push_back(motion);
-                    motion->valid = UnCkeckedP;
-                    motion->pmotion = pmotion;
-                }
+                Motion *temp = invalidMotions[i];
+                for (auto & child : temp->children)
+                    child->pmotion = pmotion;
+            }
+            if (tvalid)
+            {
+                tvalid = isPathValidInter(ppmotion, start);
+                connectToPmotion(motion, ppmotion, start);
+                motion->parent->children.push_back(motion); 
             }
             else 
+            {
                 pnullMotions.push_back(motion);
+                motion->valid = UnCkeckedP;
+                motion->pmotion = pmotion;
+            }
             if (tvalid)
                 enableMotionInDisc(motion);
             else 
@@ -1652,101 +1327,21 @@ bool ompl::geometric::BiHSC::isPathValidInter(Motion *motion, bool start)
             removeFromParent(motion);
             motion->parent = nullptr;
             tvalid = false;
-            if (rewire_)
+            std::size_t epos = invalidMotions.size();
+            for (std::size_t i = spos; i < epos; i++)
             {
-                std::size_t epos = invalidMotions.size();
-                for (std::size_t i = spos; i < epos; i++)
-                {
-                    Motion *temp = invalidMotions[i];
-                    for (auto & child : temp->children)
-                        child->pmotion = pmotion;
-                }
-                pnullMotions.push_back(motion);
-                motion->valid = UnCkeckedP;
-                motion->pmotion = pmotion;
+                Motion *temp = invalidMotions[i];
+                for (auto & child : temp->children)
+                    child->pmotion = pmotion;
             }
-            else 
-                pnullMotions.push_back(motion);
+            pnullMotions.push_back(motion);
+            motion->valid = UnCkeckedP;
+            motion->pmotion = pmotion;
             break;
         }
     }
     return tvalid;
 }
-
-/*
-bool ompl::geometric::BiHSC::isPathValidInter(Motion *motion, bool start) // back rewire
-{
-    if (!isPathValidLazy(motion, start))
-        return false;
-    bool tvalid = true;
-    std::vector<Motion *> mpath;
-    while (motion->parent)
-    {
-        mpath.push_back(motion);
-        motion = motion->parent;
-    }
-    std::vector<Motion *> &pnullMotions= start ? pnullStartMotions_: pnullGoalMotions_;
-    std::vector<Motion *> &invalidMotions = start ? invalidStartMotions_ : invalidGoalMotions_;
-    std::vector<Motion *> nullMotions;
-    for (std::size_t i = mpath.size() - 1; i < mpath.size(); i--)
-    {
-        motion = mpath[i];
-        Motion *pmotion = motion->parent;
-        std::size_t spos = invalidMotions.size();
-        if (!checkMotion(pmotion, motion, start))
-        {
-            removeFromParent(motion);
-            motion->parent = nullptr;
-            tvalid = false;
-            if (rewire_)
-            {
-                Motion *ppmotion = nullptr;
-                tvalid = backPathRewireMotion(motion, start, ppmotion);
-                std::size_t epos = invalidMotions.size();
-                for (std::size_t i = spos; i < epos; i++)
-                {
-                    Motion *temp = invalidMotions[i];
-                    for (auto & child : temp->children)
-                        child->pmotion = pmotion;
-                }
-                if (tvalid)
-                {
-                    tvalid = isPathValidInter(ppmotion, start);
-                    connectToPmotion(motion, ppmotion, start);
-                    motion->parent->children.push_back(motion); 
-                }
-                else 
-                {
-                    pnullMotions.push_back(motion);
-                    motion->valid = ValidP;
-                    motion->pmotion = pmotion;
-                    nullMotions.push_back(motion);
-                    motion->cell->data->root++;
-                }
-            }
-            else 
-                pnullMotions.push_back(motion);
-            if (tvalid)
-                enableMotionInDisc(motion);
-            else 
-                break;
-        }
-    }
-    for (auto & nullm : nullMotions)
-    {
-        for (auto & child : nullm->children)
-        {
-            child->valid = UnCkeckedP;
-            child->parent = nullptr;
-            child->pmotion = nullm;
-            pnullMotions.push_back(child);
-            child->cell->data->root++;
-        }
-        nullm->children.clear();
-    }
-    return tvalid;
-}
-*/
 
 bool ompl::geometric::BiHSC::isPathValidLazy(Motion *motion, bool start)
 {
@@ -1771,38 +1366,33 @@ bool ompl::geometric::BiHSC::isPathValidLazy(Motion *motion, bool start)
             removeFromParent(motion);
             motion->parent = nullptr;
             tvalid = false;
-            if (rewire_)
+            Motion *ppmotion = nullptr;
+            tvalid = backPathRewireMotionLazy(motion, start, ppmotion);
+            if (motion->parent)
             {
-                Motion *ppmotion = nullptr;
-                tvalid = backPathRewireMotionLazy(motion, start, ppmotion);
-                if (motion->parent)
-                {
-                    ppmotion = motion->parent;
-                    removeFromParent(motion);
-                    motion->parent = nullptr;
-                }
-                std::size_t epos = invalidMotions.size();
-                for (std::size_t i = spos; i < epos; i++)
-                {
-                    Motion *temp = invalidMotions[i];
-                    for (auto & child : temp->children)
-                        child->pmotion = pmotion;
-                }
-                if (tvalid)
-                {
-                    tvalid = isPathValidLazy(ppmotion, start);
-                    connectToPmotion(motion, ppmotion, start);
-                    motion->parent->children.push_back(motion); 
-                }
-                else 
-                {
-                    pnullMotions.push_back(motion);
-                    motion->valid = UnCkeckedP;
-                    motion->pmotion = pmotion;
-                }
+                ppmotion = motion->parent;
+                removeFromParent(motion);
+                motion->parent = nullptr;
+            }
+            std::size_t epos = invalidMotions.size();
+            for (std::size_t i = spos; i < epos; i++)
+            {
+                Motion *temp = invalidMotions[i];
+                for (auto & child : temp->children)
+                    child->pmotion = pmotion;
+            }
+            if (tvalid)
+            {
+                tvalid = isPathValidLazy(ppmotion, start);
+                connectToPmotion(motion, ppmotion, start);
+                motion->parent->children.push_back(motion); 
             }
             else 
+            {
                 pnullMotions.push_back(motion);
+                motion->valid = UnCkeckedP;
+                motion->pmotion = pmotion;
+            }
             if (tvalid)
                 enableMotionInDisc(motion);
             else 
@@ -1812,64 +1402,11 @@ bool ompl::geometric::BiHSC::isPathValidLazy(Motion *motion, bool start)
     return tvalid;
 }
 
-void ompl::geometric::BiHSC::removeInvalidMotionsDirectly()
-{
-    for (auto & pair : connectionPoint_)
-    {
-        pair.first->inConnection = false;
-        pair.second->inConnection = false;
-    }
-    connectionPoint_.clear();
-    removeInvalidMotionsDirectlyTree();
-}
-
-void ompl::geometric::BiHSC::removeInvalidMotionsDirectlyTree()
-{
-    if (!invalidStartMotions_.empty() || !pnullStartMotions_.empty())
-    {
-        tStart_->clear();
-        for (auto & rootMotion : startMotions_)
-            addToTree(tStart_, rootMotion);
-        for (auto & pnull : invalidStartMotions_)
-            removeFromTree(startBiasPdf_, pnull);
-        for (auto & pnull : pnullStartMotions_)
-            removeFromTree(startBiasPdf_, pnull);
-        invalidStartMotions_.clear();
-        pnullStartMotions_.clear();
-    }
-
-    if (!invalidGoalMotions_.empty() || !pnullGoalMotions_.empty())
-    {
-        tGoal_->clear();
-        for (auto & rootMotion : goalMotions_)
-            addToTree(tGoal_, rootMotion);
-        for (auto & pnull : invalidGoalMotions_)
-            removeFromTree(goalBiasPdf_, pnull);
-        for (auto & pnull : pnullGoalMotions_)
-            removeFromTree(goalBiasPdf_, pnull);
-        invalidGoalMotions_.clear();
-        pnullGoalMotions_.clear();
-    }
-}
-
 void ompl::geometric::BiHSC::addToTree(TreeData &tree, Motion *motion)
 {
     tree->add(motion);
     for (auto & child : motion->children)
         addToTree(tree, child);
-}
-
-void ompl::geometric::BiHSC::removeFromTree(MotionPDF &pdf, Motion *motion)
-{
-//    if (useBiasGrow_ && motion->middle && motion->stateValid == Valid)
-//        removePdfMotion(pdf, motion);
-    for (auto & child : motion->children)
-    {
-        child->parent = nullptr;
-        removeFromTree(pdf, child);
-    }
-    removeFromSafetyCerficate(motion);
-    freeMotion(motion);
 }
 
 void ompl::geometric::BiHSC::removeInvalidMotions()
@@ -1941,74 +1478,6 @@ void ompl::geometric::BiHSC::removeInvalidMotionsTree(double ratio)
     }
 }
 
-void ompl::geometric::BiHSC::addPdfMotion(MotionPDF &pdf, Motion *motion, bool start)
-{
-    Grid<MotionInfo>::Coord coord(projectionEvaluator_->getDimension());
-    projectionEvaluator_->computeCoordinates(motion->state, coord);
-
-    Grid<MotionInfo>::Cell *cell = pdf.grid.getCell(coord);
-    if (cell)
-        cell->data.push_back(motion);
-    else
-    {
-        cell = pdf.grid.createCell(coord);
-        cell->data.push_back(motion);
-        pdf.grid.add(cell);
-        cell->data.elem_ = pdf.pdf.add(cell, 0.1);
-
-        if (start)
-            startBiasProb_ = 0.1;
-        else 
-            goalBiasProb_ = 0.1;
-    }
-    pdf.size++;
-}
-
-ompl::geometric::BiHSC::Motion *ompl::geometric::BiHSC::selectPdfMotion(MotionPDF &pdf, GridCell *&cell)
-{
-    cell = pdf.pdf.sample(rng_.uniform01());
-    if (cell && !cell->data.empty())
-    {
-        double w = pdf.pdf.getWeight(cell->data.elem_);
-        if (treatedAsMultiSubapce_)
-            w /= (static_cast<double>(si_->getStateSpace()->getSubspaceCount()) + w);
-        else
-            w /= (1.0 + w);
-        pdf.pdf.update(cell->data.elem_, w);
-        return cell->data[rng_.uniformInt(0, cell->data.size() - 1)];
-    }
-    else 
-        return nullptr;
-}
-
-void ompl::geometric::BiHSC::removePdfMotion(MotionPDF &pdf, Motion *motion)
-{
-    Grid<MotionInfo>::Coord coord(projectionEvaluator_->getDimension());
-    projectionEvaluator_->computeCoordinates(motion->state, coord);
-
-    Grid<MotionInfo>::Cell *cell = pdf.grid.getCell(coord);
-    if (cell)
-    {
-        for (std::size_t i = 0; i < cell->data.size(); ++i)
-        {
-            if (cell->data[i] == motion)
-            {
-                std::iter_swap(cell->data.begin() + i, cell->data.end() - 1);
-                cell->data.pop_back();
-                pdf.size--;
-                break;
-            }
-        }
-
-        if (cell->data.empty())
-        {
-            pdf.pdf.remove(cell->data.elem_);
-            pdf.grid.remove(cell);
-            pdf.grid.destroyCell(cell);
-        }
-    }
-}
-
 void ompl::geometric::BiHSC::enableMotionInDisc(Motion *motion)
 {
     motion->cell->data->disabled--;
@@ -2016,7 +1485,7 @@ void ompl::geometric::BiHSC::enableMotionInDisc(Motion *motion)
     {
         if (!motion->cell->data->cmotion || opt_->isCostBetterThan(motion->cost, motion->cell->data->cmotion->cost))
             motion->cell->data->cmotion = motion;
-        if (!motion->cell->data->mmotion || !opt_->isCostBetterThan(motion->cost, motion->cell->data->mmotion->cost))
+        if (!motion->cell->data->mmotion || opt_->isCostBetterThan(motion->cell->data->mmotion->cost, motion->cost))
             motion->cell->data->mmotion = motion;
     }
     for (auto & child : motion->children)
@@ -2084,7 +1553,7 @@ void ompl::geometric::BiHSC::addToDisc(CellDiscretizationData &disc, Motion *mot
         cell->data->motions.push_back(motion);
     else
     {
-        cell = static_cast<Cell *>(disc.createCell(coord));
+        cell = disc.createCell(coord);
         cell->data = new CellData();
         cell->data->motions.push_back(motion);
         disc.add(cell);
@@ -2162,64 +1631,6 @@ bool ompl::geometric::BiHSC::checkMotion(Motion *pmotion, Motion *motion, bool s
         {
             if (opt_->isFinite(motion->cost))
             {
-                if (rewire_)
-                {
-                    std::unordered_set<Cell *> cells;
-                    setMotionInfinityCostWithDisable(motion, cells);
-                    if (rewireSort_)
-                    {
-                        for (auto & cell : cells)
-                        {
-                            if (cell->data->motions.size() == cell->data->disabled)
-                            {
-                                cell->data->cmotion = nullptr;
-                                cell->data->mmotion = nullptr;
-                            }
-                            else
-                            {
-                                bool e1 = !cell->data->cmotion || !opt_->isFinite(cell->data->cmotion->cost);
-                                bool e2 = !cell->data->mmotion || !opt_->isFinite(cell->data->mmotion->cost);
-                                if (e1 || e2)
-                                {
-                                    EnableSort esort(opt_);
-                                    std::sort(cell->data->motions.begin(), cell->data->motions.end(), esort);
-                                    if (e1)
-                                        cell->data->cmotion = *std::min_element(cell->data->motions.begin(), cell->data->motions.end() - cell->data->disabled, mc_);
-                                    if (e2)
-                                        cell->data->mmotion = *std::max_element(cell->data->motions.begin(), cell->data->motions.end() - cell->data->disabled, mc_);
-                                }
-                            }
-                        }
-                    }
-                }
-                else 
-                    setMotionInfinityCost(motion);
-            }
-            if (rewire_)
-                insertInvalidNeighbor(pmotion, motion);
-        }
-        else 
-        {
-            motion->valid = ValidP;
-            if (rewire_)
-            {
-                insertNeighbor(pmotion, motion);
-                CellDiscretizationData &disc = start ? dStart_ : dGoal_;
-                disc.updateNbh(pmotion->cell, motion->cell);
-            }
-        }
-    }
-    return motion->valid == ValidP;
-}
-
-bool ompl::geometric::BiHSC::checkMotionLazy(Motion *pmotion, Motion *motion, bool start)
-{
-    if (motion->valid == UnCkeckedP && !checkInterMotionLazy(pmotion, motion, start))
-    {
-        if (opt_->isFinite(motion->cost))
-        {
-            if (rewire_)
-            {
                 std::unordered_set<Cell *> cells;
                 setMotionInfinityCostWithDisable(motion, cells);
                 if (rewireSort_)
@@ -2248,11 +1659,54 @@ bool ompl::geometric::BiHSC::checkMotionLazy(Motion *pmotion, Motion *motion, bo
                     }
                 }
             }
-            else 
-                setMotionInfinityCost(motion);
-        }
-        if (rewire_)
             insertInvalidNeighbor(pmotion, motion);
+        }
+        else 
+        {
+            motion->valid = ValidP;
+            insertNeighbor(pmotion, motion);
+            CellDiscretizationData &disc = start ? dStart_ : dGoal_;
+            disc.updateNbh(pmotion->cell, motion->cell);
+        }
+    }
+    return motion->valid == ValidP;
+}
+
+bool ompl::geometric::BiHSC::checkMotionLazy(Motion *pmotion, Motion *motion, bool start)
+{
+    if (motion->valid == UnCkeckedP && !checkInterMotionLazy(pmotion, motion, start))
+    {
+        if (opt_->isFinite(motion->cost))
+        {
+            std::unordered_set<Cell *> cells;
+            setMotionInfinityCostWithDisable(motion, cells);
+            if (rewireSort_)
+            {
+                for (auto & cell : cells)
+                {
+                    if (cell->data->motions.size() == cell->data->disabled)
+                    {
+                        cell->data->cmotion = nullptr;
+                        cell->data->mmotion = nullptr;
+                    }
+                    else
+                    {
+                        bool e1 = !cell->data->cmotion || !opt_->isFinite(cell->data->cmotion->cost);
+                        bool e2 = !cell->data->mmotion || !opt_->isFinite(cell->data->mmotion->cost);
+                        if (e1 || e2)
+                        {
+                            EnableSort esort(opt_);
+                            std::sort(cell->data->motions.begin(), cell->data->motions.end(), esort);
+                            if (e1)
+                                cell->data->cmotion = *std::min_element(cell->data->motions.begin(), cell->data->motions.end() - cell->data->disabled, mc_);
+                            if (e2)
+                                cell->data->mmotion = *std::max_element(cell->data->motions.begin(), cell->data->motions.end() - cell->data->disabled, mc_);
+                        }
+                    }
+                }
+            }
+        }
+        insertInvalidNeighbor(pmotion, motion);
     }
     return motion->valid >= LazyValid;
 }
@@ -2364,21 +1818,15 @@ bool ompl::geometric::BiHSC::checkInterMotionLazy(Motion *pmotion, Motion *motio
                 if (low == 0.0 && high == 1.0)
                 {
                     motion->valid = ValidP;
-                    if (rewire_)
-                    {
-                        insertNeighbor(motion, pmotion);
-                        disc.updateNbh(motion->cell, pmotion->cell);
-                    }
+                    insertNeighbor(motion, pmotion);
+                    disc.updateNbh(motion->cell, pmotion->cell);
                 }
                 else if (low == 0.0)
                 {
                     addIntermediateMotionLazy(pmotion, start, motion2);
                     motion2->valid = ValidP;
-                    if (rewire_)
-                    {
-                        insertNeighbor(motion2, pmotion);
-                        disc.updateNbh(motion2->cell, pmotion->cell);
-                    }
+                    insertNeighbor(motion2, pmotion);
+                    disc.updateNbh(motion2->cell, pmotion->cell);
                     removeFromParent(motion);
                     motion->parent = motion2;
                     motion->parent->children.push_back(motion);
@@ -2392,11 +1840,8 @@ bool ompl::geometric::BiHSC::checkInterMotionLazy(Motion *pmotion, Motion *motio
                     motion->parent->children.push_back(motion);
                     motion->incCost = start ? opt_->motionCost(motion1->state, motion->state) : opt_->motionCost(motion->state, motion1->state);
                     motion->valid = ValidP;
-                    if (rewire_)
-                    {
-                        insertNeighbor(motion1, motion);
-                        disc.updateNbh(motion1->cell, motion->cell);
-                    }
+                    insertNeighbor(motion1, motion);
+                    disc.updateNbh(motion1->cell, motion->cell);
                 }
                 else 
                 {
@@ -2407,11 +1852,8 @@ bool ompl::geometric::BiHSC::checkInterMotionLazy(Motion *pmotion, Motion *motio
                     motion->incCost = start ? opt_->motionCost(motion2->state, motion->state) : opt_->motionCost(motion->state, motion2->state);
                     motion->valid = LazyValid;
                     motion2->valid = ValidP;
-                    if (rewire_)
-                    {
-                        insertNeighbor(motion1, motion2);
-                        disc.updateNbh(motion1->cell, motion2->cell);
-                    }
+                    insertNeighbor(motion1, motion2);
+                    disc.updateNbh(motion1->cell, motion2->cell);
                 }
             }
             else 
@@ -2505,15 +1947,6 @@ bool ompl::geometric::BiHSC::isValid(Motion *motion, bool start)
         if (isValid(motion->state))
         {
             motion->stateValid = Valid;
-            /*
-            if (useBiasGrow_ && motion->middle)
-            {
-                if (start)
-                    addPdfMotion(startBiasPdf_, motion, true);
-                else 
-                    addPdfMotion(goalBiasPdf_, motion, false);
-            }
-            */
             return true;
         }
         motion->stateValid = InValid;
@@ -2537,17 +1970,12 @@ bool ompl::geometric::BiHSC::isValid(Motion *motion, bool start)
         if (opt_->isFinite(motion->cost))
         {
             std::unordered_set<Cell *> cells;
-            if (rewire_)
-            {
-                setMotionInfinityCostWithDisable(motion, cells);
-                if (motion->cell->data->motions.size() == 1)
-                    cells.erase(motion->cell);
-                else 
-                    motion->cell->data->disabled--;
-                removeFromDisc(disc, motion);
-            }
+            setMotionInfinityCostWithDisable(motion, cells);
+            if (motion->cell->data->motions.size() == 1)
+                cells.erase(motion->cell);
             else 
-                setMotionInfinityCost(motion);
+                motion->cell->data->disabled--;
+            removeFromDisc(disc, motion);
             if (rewireSort_)
             {
                 for (auto & cell : cells)
@@ -2574,7 +2002,7 @@ bool ompl::geometric::BiHSC::isValid(Motion *motion, bool start)
                 }
             }
         }
-        else if (rewire_)
+        else
         {
             motion->cell->data->disabled--;
             removeFromDisc(disc, motion);
@@ -2737,7 +2165,7 @@ bool ompl::geometric::BiHSC::checkInterMotion1(Motion *smotion, Motion *gmotion,
         }
         if (!valid)
         {
-            if (addIntermediateState_ && ratio * dist > 0.25 * maxDistance_)
+            if (addIntermediateState_ && ratio > 0.5 && ratio * dist > 0.25 * maxDistance_)
             {
                 ratio -= delta;
                 Motion *last = new Motion(si_);
@@ -2810,7 +2238,7 @@ bool ompl::geometric::BiHSC::checkInterMotion2(Motion *smotion, Motion *gmotion,
         }
         if (!valid)
         {
-            if (addIntermediateState_ && ratio * dist < 0.75 * maxDistance_)
+            if (addIntermediateState_ && ratio < 0.5 && (1.0 - ratio) * dist > 0.25 * maxDistance_)
             {
                 ratio += delta;
                 Motion *last = new Motion(si_);
@@ -2847,25 +2275,22 @@ void ompl::geometric::BiHSC::addIntermediateMotion(Motion *pmotion, Motion *moti
     connectToPmotion(last, pmotion, start);
     last->parent->children.push_back(last);
     tree->add(last);
-    if (rewire_)
+    CellDiscretizationData &disc = start ? dStart_ : dGoal_;
+    Coord xcoord(projectionEvaluator_->getDimension());
+    projectionEvaluator_->computeCoordinates(last->state, xcoord);
+    addToDisc(disc, last, xcoord);
+    if (!opt_->isFinite(last->cost))
+        last->cell->data->disabled++;
+    insertNeighbor(last, pmotion);
+    disc.updateNbh(last->cell, pmotion->cell);
+    if (motion->stateValid == Valid)
+        insertInvalidNeighbor(last, motion);
+    if (rewireSort_)
     {
-        CellDiscretizationData &disc = start ? dStart_ : dGoal_;
-        Coord xcoord(projectionEvaluator_->getDimension());
-        projectionEvaluator_->computeCoordinates(last->state, xcoord);
-        addToDisc(disc, last, xcoord);
-        if (!opt_->isFinite(last->cost))
-            last->cell->data->disabled++;
-        insertNeighbor(last, pmotion);
-        disc.updateNbh(last->cell, pmotion->cell);
-        if (motion->stateValid == Valid)
-            insertInvalidNeighbor(last, motion);
-        if (rewireSort_)
-        {
-            if (!last->cell->data->cmotion || opt_->isCostBetterThan(last->cost, last->cell->data->cmotion->cost))
-                last->cell->data->cmotion = last;
-            if (!last->cell->data->mmotion || !opt_->isCostBetterThan(last->cost, last->cell->data->mmotion->cost))
-                last->cell->data->mmotion = last;
-        }
+        if (!last->cell->data->cmotion || opt_->isCostBetterThan(last->cost, last->cell->data->cmotion->cost))
+            last->cell->data->cmotion = last;
+        if (!last->cell->data->mmotion || opt_->isCostBetterThan(last->cell->data->mmotion->cost, last->cost))
+            last->cell->data->mmotion = last;
     }
     if (lazyNode_)
     {
@@ -2886,21 +2311,18 @@ void ompl::geometric::BiHSC::addIntermediateMotionLazy(Motion *pmotion, bool sta
     connectToPmotion(last, pmotion, start);
     last->parent->children.push_back(last);
     tree->add(last);
-    if (rewire_)
+    CellDiscretizationData &disc = start ? dStart_ : dGoal_;
+    Coord xcoord(projectionEvaluator_->getDimension());
+    projectionEvaluator_->computeCoordinates(last->state, xcoord);
+    addToDisc(disc, last, xcoord);
+    if (!opt_->isFinite(last->cost))
+        last->cell->data->disabled++;
+    if (rewireSort_)
     {
-        CellDiscretizationData &disc = start ? dStart_ : dGoal_;
-        Coord xcoord(projectionEvaluator_->getDimension());
-        projectionEvaluator_->computeCoordinates(last->state, xcoord);
-        addToDisc(disc, last, xcoord);
-        if (!opt_->isFinite(last->cost))
-            last->cell->data->disabled++;
-        if (rewireSort_)
-        {
-            if (!last->cell->data->cmotion || opt_->isCostBetterThan(last->cost, last->cell->data->cmotion->cost))
-                last->cell->data->cmotion = last;
-            if (!last->cell->data->mmotion || !opt_->isCostBetterThan(last->cost, last->cell->data->mmotion->cost))
-                last->cell->data->mmotion = last;
-        }
+        if (!last->cell->data->cmotion || opt_->isCostBetterThan(last->cost, last->cell->data->cmotion->cost))
+            last->cell->data->cmotion = last;
+        if (!last->cell->data->mmotion || opt_->isCostBetterThan(last->cell->data->mmotion->cost, last->cost))
+            last->cell->data->mmotion = last;
     }
     if (lazyNode_ && pmotion->sce)
     {
@@ -2929,49 +2351,46 @@ bool ompl::geometric::BiHSC::isStateValid(Motion *motion, bool start)  // todo
         if (!isValid(motion, start))
         {
             tvalid = false;
-            if (rewire_)
+            Motion *last = nullptr;
+            i--;
+            while (i < mpath.size())
             {
-                Motion *last = nullptr;
-                i--;
-                while (i < mpath.size())
+                if (isValid(mpath[i], start))
                 {
-                    if (isValid(mpath[i], start))
-                    {
-                        last = mpath[i];
-                        break;
-                    }
-                    i--;
+                    last = mpath[i];
+                    break;
                 }
-                if (last != nullptr)
+                i--;
+            }
+            if (last != nullptr)
+            {
+                removeFromParent(last);
+                last->parent = nullptr;
+                Motion *plast = nullptr;
+                tvalid = backPathRewireMotion(last, start, plast);
+                epos = invalidMotions.size();
+                if (tvalid)
                 {
-                    removeFromParent(last);
-                    last->parent = nullptr;
-                    Motion *plast = nullptr;
-                    tvalid = backPathRewireMotion(last, start, plast);
-                    epos = invalidMotions.size();
+                    tvalid = isPathValidInter(plast, start); // todo
+                    connectToPmotion(last, plast, start);
+                    last->parent->children.push_back(last);
                     if (tvalid)
-                    {
-                        tvalid = isPathValidInter(plast, start); // todo
-                        connectToPmotion(last, plast, start);
-                        last->parent->children.push_back(last);
-                        if (tvalid)
-                            enableMotionInDisc(last);
-                    }
-                    else 
-                    {
-                        last->valid = UnCkeckedP;
-                        last->pmotion = pmotion;
-                        pnullMotions.push_back(last);
-                    }
+                        enableMotionInDisc(last);
                 }
                 else 
-                    epos = invalidMotions.size();
-                for (std::size_t i = spos; i < epos; i++)
                 {
-                    Motion *temp = invalidMotions[i];
-                    for (auto & child : temp->children)
-                        child->pmotion = pmotion;
+                    last->valid = UnCkeckedP;
+                    last->pmotion = pmotion;
+                    pnullMotions.push_back(last);
                 }
+            }
+            else 
+                epos = invalidMotions.size();
+            for (std::size_t i = spos; i < epos; i++)
+            {
+                Motion *temp = invalidMotions[i];
+                for (auto & child : temp->children)
+                    child->pmotion = pmotion;
             }
             if (!tvalid)
                 break;
@@ -2985,14 +2404,15 @@ bool ompl::geometric::BiHSC::backPathRewireMotion(Motion *motion, bool start, Mo
     bool valid = false;
     OrderCellsByCost ocbc(opt_);
     CellDiscretizationData &disc = start ? dStart_ : dGoal_;
-    for (auto & cv : motion->cell->nbh)
+    std::size_t cnbh = motion->cell->nbh.size();
+    for (std::size_t cindex = 0; cindex < cnbh; cindex++)
     {
-        std::size_t numc = cv.size(), ic = numc - 1;
+        std::size_t numc = motion->cell->nbh[cindex].size(), ic = numc - 1;
         while (ic < numc)
         {
             if (rewireSort_ && ic)
-                std::sort(cv.begin(), cv.begin() + ic + 1, ocbc);
-            Cell *c = cv[ic];
+                std::sort(motion->cell->nbh[cindex].begin(), motion->cell->nbh[cindex].begin() + ic + 1, ocbc);
+            Cell *c = motion->cell->nbh[cindex][ic];
             ic--;
             std::size_t num = c->data->motions.size() - c->data->disabled;
             if (!num)
@@ -3027,7 +2447,7 @@ bool ompl::geometric::BiHSC::backPathRewireMotion(Motion *motion, bool start, Mo
             std::size_t ictemp = ic;
             while (ictemp < numc)
             {
-                ctemp.insert(cv[ictemp]);
+                ctemp.insert(motion->cell->nbh[cindex][ictemp]);
                 ictemp--;
             }
             bool invalid = false;
@@ -3051,6 +2471,7 @@ bool ompl::geometric::BiHSC::backPathRewireMotion(Motion *motion, bool start, Mo
                     }
                     else
                     {
+                        invalid = true;
                         insertInvalidNeighbor(nb, motion);
                         continue;
                     }
@@ -3064,10 +2485,10 @@ bool ompl::geometric::BiHSC::backPathRewireMotion(Motion *motion, bool start, Mo
                 break;
             if (invalid && !ctemp.empty())
             {
-                numc = cv.size(), ic = numc - 1;
+                numc = motion->cell->nbh[cindex].size(), ic = numc - 1;
                 while (ic < numc)
                 {
-                    if (ctemp.find(cv[ic]) != ctemp.end())
+                    if (ctemp.find(motion->cell->nbh[cindex][ic]) != ctemp.end())
                         break;
                     ic--;
                 }
@@ -3083,14 +2504,15 @@ bool ompl::geometric::BiHSC::backPathRewireMotionLazy(Motion *motion, bool start
 {
     bool valid = false;
     OrderCellsByCost ocbc(opt_);
-    for (auto & cv : motion->cell->nbh)
+    std::size_t cnbh = motion->cell->nbh.size();
+    for (std::size_t cindex = 0; cindex < cnbh; cindex++)
     {
-        std::size_t numc = cv.size(), ic = numc - 1;
+        std::size_t numc = motion->cell->nbh[cindex].size(), ic = numc - 1;
         while (ic < numc)
         {
             if (rewireSort_ && ic)
-                std::sort(cv.begin(), cv.begin() + ic + 1, ocbc);
-            Cell *c = cv[ic];
+                std::sort(motion->cell->nbh[cindex].begin(), motion->cell->nbh[cindex].begin() + ic + 1, ocbc);
+            Cell *c = motion->cell->nbh[cindex][ic];
             ic--;
             std::size_t num = c->data->motions.size() - c->data->disabled;
             if (!num)
@@ -3125,7 +2547,7 @@ bool ompl::geometric::BiHSC::backPathRewireMotionLazy(Motion *motion, bool start
             std::size_t ictemp = ic;
             while (ictemp < numc)
             {
-                ctemp.insert(cv[ictemp]);
+                ctemp.insert(motion->cell->nbh[cindex][ictemp]);
                 ictemp--;
             }
             bool invalid = false;
@@ -3144,6 +2566,7 @@ bool ompl::geometric::BiHSC::backPathRewireMotionLazy(Motion *motion, bool start
                 {
                     if (!checkInterMotionLazy(nb, motion, start))
                     {
+                        invalid = true;
                         insertInvalidNeighbor(nb, motion);
                         continue;
                     }
@@ -3158,10 +2581,10 @@ bool ompl::geometric::BiHSC::backPathRewireMotionLazy(Motion *motion, bool start
                 break;
             if (invalid && !ctemp.empty())
             {
-                numc = cv.size(), ic = numc - 1;
+                numc = motion->cell->nbh[cindex].size(), ic = numc - 1;
                 while (ic < numc)
                 {
-                    if (ctemp.find(cv[ic]) != ctemp.end())
+                    if (ctemp.find(motion->cell->nbh[cindex][ic]) != ctemp.end())
                         break;
                     ic--;
                 }

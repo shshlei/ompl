@@ -42,9 +42,7 @@
 
 #include "ompl/datastructures/NearestNeighbors.h"
 #include "ompl/datastructures/BinaryHeap.h"
-#include "ompl/datastructures/GridN.h"
-#include "ompl/datastructures/Grid.h"
-#include "ompl/datastructures/PDF.h"
+#include "ompl/datastructures/GridNR.h"
 
 #include "ompl/base/State.h"
 #include "ompl/base/SafetyCertificate.h"
@@ -105,22 +103,8 @@ namespace ompl
                 return penDistance_;
             }
 
-            void setLazyPath(bool lazy)
-            {
-                lazyPath_ = lazy;
-                if (!lazyPath_)
-                    lazyNode_ = false;
-            }
-
-            bool getLazyPath() const
-            {
-                return lazyPath_;
-            }
-
             void setLazyNode(bool lazy)
             {
-                if (lazy)
-                    lazyPath_ = true;
                 lazyNode_ = lazy;
             }
 
@@ -151,54 +135,12 @@ namespace ompl
 
             void setUseBispace(bool bispace)
             {
-                if (!bispace)
-                    treatedAsMultiSubapce_ = false;
                 useBispace_ = bispace;
             }
 
             bool getUseBispace() const
             {
                 return useBispace_;
-            }
-
-            void setUseBiasGrow(bool use)
-            {
-                useBiasGrow_ = use;
-                if (!useBispace_ && use)
-                {
-                    OMPL_WARN("%s: The bias grow feature is not usable since the bispace feature is not set.", getName().c_str());
-                    useBiasGrow_ = false;
-                }
-            }
-
-            bool getUseBiasGrow() const
-            {
-                return useBiasGrow_;
-            }
-
-            void setTreatedAsMultiSubapce(bool sub)
-            {
-                treatedAsMultiSubapce_ = sub;
-                if (!useBispace_ && sub)
-                {
-                    OMPL_WARN("%s: The treate as multisubspace feature is not usable since the bispace feature is not set.", getName().c_str());
-                    treatedAsMultiSubapce_ = false;
-                }
-            }
-
-            bool getTreatedAsMultiSubapce() const
-            {
-                return treatedAsMultiSubapce_;
-            }
-
-            void setRewire(bool rewire)
-            {
-                rewire_ = rewire;
-            }
-
-            bool getRewire() const
-            {
-                return rewire_;
             }
 
             void setRewireSort(bool rewire)
@@ -283,7 +225,7 @@ namespace ompl
                 std::size_t disabled{0};
             };
 
-            using CellDiscretizationData = GridN<CellData *>;
+            using CellDiscretizationData = GridNR<CellData *>;
             using Cell = CellDiscretizationData::Cell;
             using Coord = CellDiscretizationData::Coord;
 
@@ -486,8 +428,6 @@ namespace ompl
 
             void updateQueue(BinaryHeap<Motion *, MotionCompare> &bh, Motion *m);
 
-            bool isPathValid(Motion *motion, Motion *otherMotion, bool start);
-
             /** \brief Check if the connected path is valid */
             bool isPathValid(Motion *motion, Motion *otherMotion);
 
@@ -497,20 +437,11 @@ namespace ompl
             /** \brief Check from the connect point to the root */
             bool isPathValidInter(Motion *motion, bool start);
 
-            bool isPathValidLazy(Motion *motion, bool start);
-
             void addToDisc(CellDiscretizationData &disc, Motion *motion, const Coord& coord);
 
             void removeFromDisc(CellDiscretizationData &disc, Motion *motion);
 
-            void removeInvalidMotionsDirectly();
-
-            void removeInvalidMotionsDirectlyTree();
-
             void addToTree(TreeData &tree, Motion *motion);
-
-            struct MotionPDF;
-            void removeFromTree(MotionPDF &pdf, Motion *motion);
 
             void removeInvalidMotions();
 
@@ -525,11 +456,7 @@ namespace ompl
 
             bool checkMotion(Motion *pmotion, Motion *motion, bool start);
 
-            bool checkMotionLazy(Motion *pmotion, Motion *motion, bool start);
-
             bool checkInterMotion(Motion *pmotion, Motion *motion, bool start);
-
-            bool checkInterMotionLazy(Motion *pmotion, Motion *motion, bool start);
 
             void insertNeighbor(Motion *pmotion, Motion *motion);
 
@@ -598,17 +525,11 @@ namespace ompl
 
             double penDistance_{0.0};
 
-            std::vector<double> maxDistanceV_, penDistanceV_;
-
             double maxInvalidNodeRatio_{0.1};
-
-            bool lazyPath_{true};
 
             bool lazyNode_{true};
 
             bool addIntermediateState_{true};
-
-            bool rewire_{true};
 
             bool rewireSort_{true};
 
@@ -628,91 +549,11 @@ namespace ompl
 
             ////////////////////////////////////////////////////////////////////////////////////////////////////
             // bispace 
-            struct MotionInfo;
-
-            using GridCell = Grid<MotionInfo>::Cell;
-
-            using CellPDF = PDF<GridCell *>;
-
-            struct MotionInfo
-            {
-                Motion *operator[](unsigned int i)
-                {
-                    return motions_[i];
-                }
-                std::vector<Motion *>::iterator begin()
-                {
-                    return motions_.begin();
-                }
-                std::vector<Motion *>::iterator end()
-                {
-                    return motions_.end();
-                }
-                std::vector<Motion *>::iterator erase(std::vector<Motion *>::iterator iter)
-                {
-                    std::vector<Motion *>::iterator it = motions_.erase(iter);
-                    return it;
-                }
-                void push_back(Motion *m)
-                {
-                    motions_.push_back(m);
-                }
-                void pop_back()
-                {
-                    motions_.pop_back();
-                }
-                std::size_t size() const
-                {
-                    return motions_.size();
-                }
-                bool empty() const
-                {
-                    return motions_.empty();
-                }
-
-                std::vector<Motion *> motions_;
-                CellPDF::Element *elem_;
-            };
-
-            struct MotionPDF
-            {
-                MotionPDF() = default;
-
-                Grid<MotionInfo> grid{0};
-
-                std::size_t size{0};
-
-                CellPDF pdf;
-            };
-
-            MotionPDF startBiasPdf_, goalBiasPdf_;
-
-            void addPdfMotion(MotionPDF &pdf, Motion *motion, bool start);
-
-            Motion *selectPdfMotion(MotionPDF &pdf, GridCell *&cell);
-
-            void removePdfMotion(MotionPDF &pdf, Motion *motion);
-
-            double startBiasProb_{0.0}, goalBiasProb_{0.0};
-
             bool useBispace_{true};
-
-            bool useBiasGrow_{false};
-
-            bool treatedAsMultiSubapce_{false};
-
-            std::vector<ompl::base::State *> startBiasStates_, goalBiasStates_;
 
 
             ////////////////////////////////////////////////////////////////////////////////////////////////////
             // safety certificate 
-            double distanceFunction(const base::SafetyCertificate *a, const base::SafetyCertificate *b) const
-            {
-                std::vector<double> cdist = distanceCertificate_(a->state, b->state);
-                double dist = std::accumulate(cdist.begin(), cdist.end(), 0.0);
-                return dist;
-            }
-
             base::PlannerStatus prepareSolve(const base::PlannerTerminationCondition &ptc);
 
             /** feasible */
@@ -742,6 +583,12 @@ namespace ompl
             void removeInvalidCertificate(std::queue<SafetyCertificatePairs, std::deque<SafetyCertificatePairs>> &scQueue, bool start);
 
             bool certificateOutside(const std::vector<double> &scd, const std::vector<double> &confidence) const;
+
+            bool isPathValidLazy(Motion *motion, bool start);
+
+            bool checkMotionLazy(Motion *pmotion, Motion *motion, bool start);
+
+            bool checkInterMotionLazy(Motion *pmotion, Motion *motion, bool start);
 
             /** \brief The metric space is symmetric */
             bool checkInterMotion1(Motion *smotion, Motion *gmotion, bool start);

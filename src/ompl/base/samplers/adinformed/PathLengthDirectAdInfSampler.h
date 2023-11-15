@@ -92,7 +92,7 @@ namespace ompl
             unsigned int getInformedDimension() const
             {
                 return informedSubSpace_->getDimension();
-            } 
+            }
 
             bool isInPhs(const State *state) const;
 
@@ -108,11 +108,7 @@ namespace ompl
 
             std::vector<double> getInformedSubstate(const State *state) const;
 
-            void createFullState(State *state, const std::vector<double> &informedVector);
-
             bool isInPhs(const std::vector<double> &informedVector) const;
-
-            void enforceBoundsRandom(std::vector<double> &informedVector);
 
             ompl::ProlateHyperspheroidRingPtr phsPtr_;
 
@@ -133,6 +129,9 @@ namespace ompl
             mutable unsigned int direct_;
 
             mutable unsigned int indirect_;
+
+            bool compound_{false};
+            bool compoundCompound_{false};
         };
     }
 }

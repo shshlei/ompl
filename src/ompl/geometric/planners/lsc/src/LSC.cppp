@@ -1,0 +1,644 @@
+/*********************************************************************
+* Software License Agreement (BSD License)
+*
+*  Copyright (c) 2008, Willow Garage, Inc.
+*  All rights reserved.
+*
+*  Redistribution and use in source and binary forms, with or without
+*  modification, are permitted provided that the following conditions
+*  are met:
+*
+*   * Redistributions of source code must retain the above copyright
+*     notice, this list of conditions and the following disclaimer.
+*   * Redistributions in binary form must reproduce the above
+*     copyright notice, this list of conditions and the following
+*     disclaimer in the documentation and/or other materials provided
+*     with the distribution.
+*   * Neither the name of the Willow Garage nor the names of its
+*     contributors may be used to endorse or promote products derived
+*     from this software without specific prior written permission.
+*
+*  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+*  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+*  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+*  FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+*  COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+*  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+*  BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+*  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+*  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+*  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+*  ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+*  POSSIBILITY OF SUCH DAMAGE.
+*********************************************************************/
+
+/* Author: Shi Shenglei */
+
+#include "ompl/geometric/planners/lsc/LSC.h"
+#include "ompl/base/goals/GoalSampleableRegion.h"
+#include "ompl/tools/config/SelfConfig.h"
+
+#include <cassert>
+
+ompl::geometric::LSC::LSC(const base::SpaceInformationPtr &si, const SafetyCertificateChecker &safetyCertificateChecker,
+                          const CollisionCertificateChecker &collisionCertificateChecker, double confidence) :
+    base::Planner(si, "LSC"), safetyCertificateChecker_(safetyCertificateChecker), collisionCertificateChecker_(collisionCertificateChecker), confidence_(confidence)
+{
+    specs_.directed = true;
+
+    Planner::declareParam<double>("range", this, &LSC::setRange, &LSC::getRange, "0.:1.:10000.");
+    Planner::declareParam<double>("goal_bias", this, &LSC::setGoalBias, &LSC::getGoalBias, "0.:.05:1.");
+	Planner::declareParam<unsigned int>("collision_confidence", this, &LSC::setCollisionConfidence, &LSC::getCollisionConfidence, "0:1:10");
+}
+
+ompl::geometric::LSC::~LSC()
+{
+    freeMemory();
+}
+
+void ompl::geometric::LSC::setup()
+{
+    Planner::setup();
+    tools::SelfConfig sc(si_, getName());
+    sc.configurePlannerRange(maxDistance_);
+
+    if (!nn_)
+        nn_.reset(tools::SelfConfig::getDefaultNearestNeighbors<Motion *>(this));
+    nn_->setDistanceFunction([this](const Motion *a, const Motion *b)
+                             {
+                                 return distanceFunction(a, b);
+                             });
+							 
+	if (!snn_)
+        snn_.reset(tools::SelfConfig::getDefaultNearestNeighbors<base::SafetyCertificate *>(this));
+    snn_->setDistanceFunction([this](const base::SafetyCertificate *a, const base::SafetyCertificate *b)
+                             {
+                                 return distanceFunction(a, b);
+                             });
+	
+	if (!onn_)
+        onn_.reset(tools::SelfConfig::getDefaultNearestNeighbors<base::SafetyCertificate *>(this));
+    onn_->setDistanceFunction([this](const base::SafetyCertificate *a, const base::SafetyCertificate *b)
+                             {
+                                 return distanceFunction(a, b);
+                             });
+}
+
+void ompl::geometric::LSC::freeMemory()
+{
+    if (nn_)
+    {
+        std::vector<Motion *> motions;
+        nn_->list(motions);
+        for (auto &motion : motions)
+        {
+            if (motion->state != nullptr)
+                si_->freeState(motion->state);
+            delete motion;
+        }
+    }
+
+    std::vector<base::SafetyCertificate *> safetycertificates;
+
+	if (snn_)
+    {
+        snn_->list(safetycertificates);
+        for (auto & safetycertificate : safetycertificates)
+        {
+            if (safetycertificate->state != nullptr)
+                si_->freeState(safetycertificate->state);
+			if (safetycertificate->contact != nullptr)
+				delete safetycertificate->contact;
+            if (!safetycertificate->estates_.empty())
+            {
+                for (auto & state : safetycertificate->estates_)
+                    si_->freeState(state);
+                safetycertificate->estates_.clear();
+                safetycertificate->erange_.clear();
+            }
+            delete safetycertificate;
+        }
+        safetycertificates.clear();
+    }
+
+	if (onn_)
+    {
+        onn_->list(safetycertificates);
+        for (auto &safetycertificate : safetycertificates)
+        {
+            if (safetycertificate->state != nullptr)
+                si_->freeState(safetycertificate->state);
+			if (safetycertificate->contact != nullptr)
+				delete safetycertificate->contact;
+            delete safetycertificate;
+        }
+        safetycertificates.clear();
+    }
+}
+
+void ompl::geometric::LSC::clear()
+{
+    Planner::clear();
+    sampler_.reset();
+    freeMemory();
+    if (nn_)
+    {
+        nn_->clear();
+    }
+
+	if (snn_)
+    {
+        snn_->clear();
+    }
+
+	if (onn_)
+    {
+        onn_->clear();
+    }
+}
+
+ompl::base::PlannerStatus ompl::geometric::LSC::solve(const base::PlannerTerminationCondition &ptc)
+{
+    checkValidity();
+
+    auto *goal = dynamic_cast<base::GoalSampleableRegion *>(pdef_->getGoal().get());
+
+    if (goal == nullptr)
+    {
+        OMPL_ERROR("%s: Unknown type of goal", getName().c_str());
+        return base::PlannerStatus::UNRECOGNIZED_GOAL_TYPE;
+    }
+    else if (!goal->couldSample())
+    {
+        OMPL_ERROR("%s: Insufficient states in sampleable goal region", getName().c_str());
+        return base::PlannerStatus::INVALID_GOAL;
+    }
+
+    if (pis_.haveMoreStartStates())
+    {
+        while (const base::State *st = pis_.nextStart())
+        {
+            auto *motion = new Motion(si_);
+            si_->copyState(motion->state, st);
+            motion->valid = true;
+            motion->stateValid = true;
+            motion->root = motion->state;
+            nn_->add(motion);
+
+            auto *sc = new base::SafetyCertificate(si_);
+            delete sc->contact;
+            sc->contact = nullptr;
+            si_->copyState(sc->state, st);
+            sc->confidence_ = confidence_;
+            motion->sc = sc;
+            motion->scself = true;
+            snn_->add(sc);
+        }
+    }
+
+    if (nn_->size() == 0)
+    {
+        OMPL_ERROR("%s: There are no valid initial states!", getName().c_str());
+        return base::PlannerStatus::INVALID_START;
+    }
+
+    if (!sampler_)
+        sampler_ = si_->allocStateSampler();
+
+    OMPL_INFORM("%s: Starting planning with %u states already in datastructure", getName().c_str(), nn_->size());
+
+    Motion *solution = nullptr;
+    double distsol = -1.0;
+
+    auto *rmotion = new Motion(si_);
+    base::State *rstate = rmotion->state;
+    base::State *xstate = si_->allocState();
+
+    bool solutionFound = false;
+
+    bool fsc = false;
+    base::SafetyCertificate *fcsc;
+
+    while (!ptc && !solutionFound)
+    {
+        /* sample random state (with goal biasing) */
+        if (rng_.uniform01() < goalBias_ && goal->canSample())
+            goal->sampleGoal(rstate);
+        else
+            sampler_->sampleUniform(rstate);
+
+        /* find closest state in the tree */
+        Motion *nmotion = nn_->nearest(rmotion);
+        assert(nmotion != rmotion);
+
+        base::SafetyCertificate *sc = nmotion->sc;
+        std::vector<base::SafetyCertificate *> nsc;
+        nsc.push_back(sc);
+
+        base::State *dstate = rstate;
+
+        /* find state to add */
+        double d = si_->distance(nmotion->state, rstate);
+        if (d > maxDistance_)
+        {
+            si_->getStateSpace()->interpolate(nmotion->state, rstate, maxDistance_ / d, xstate);
+            dstate = xstate;
+        }
+
+        safetyCertificateChecker_(dstate, nsc, fsc, fcsc);
+
+        Motion *motion = nullptr;
+
+        if (fsc)
+        {
+            motion = new Motion(si_);
+            si_->copyState(motion->state, dstate);
+            motion->parent = nmotion;
+            motion->root = nmotion->root;
+            motion->parent->children.push_back(motion);
+
+            nn_->add(motion);
+
+            motion->sc = fcsc;
+        }
+        else 
+        {
+            if (isValid(dstate, fcsc))
+            {
+                motion = new Motion(si_);
+                si_->copyState(motion->state, dstate);
+                motion->stateValid = true;
+                motion->sc = fcsc;
+                motion->scself = true;
+
+                if (sc->lockConfidence_ && nmotion->scself)
+                {
+                    fsc = false;
+
+                    while (!fsc)
+                    {
+                        si_->getStateSpace()->interpolate(nmotion->state, dstate, 0.8, xstate);
+                        dstate = xstate;
+                        safetyCertificateChecker_(dstate, nsc, fsc, fcsc);
+                    }
+
+                    auto *motion1 = new Motion(si_);
+                    si_->copyState(motion1->state, dstate);
+                    motion1->parent = nmotion;
+                    motion1->root = nmotion->root;
+                    motion1->parent->children.push_back(motion1);
+
+                    nn_->add(motion1);
+                    motion1->sc = fcsc;
+
+                    motion->parent = motion1;
+                    motion->root = motion1->root;
+                    motion->parent->children.push_back(motion);
+
+                    nn_->add(motion);
+                }
+                else 
+                {
+                    motion->parent = nmotion;
+                    motion->root = nmotion->root;
+                    motion->parent->children.push_back(motion);
+
+                    nn_->add(motion);
+                }
+            }
+            else
+            {
+                continue;
+            }
+        }
+        
+        if (goal->isSatisfied(motion->state, &distsol))
+        {
+            solution = motion;
+            std::vector<Motion *> mpath;
+            while (solution != nullptr)
+            {
+                mpath.push_back(solution);
+                solution = solution->parent;
+            }
+
+            bool stateValid = false;
+            solutionFound = true;
+
+            for (unsigned int i = mpath.size() - 1; i > 0; i--)
+            {
+                if (!checkStartMotion(mpath[i], mpath[i-1], stateValid))
+                {
+                    if (!stateValid)
+                        removeMotion(mpath[i]);
+                    else 
+                        removeMotion(mpath[i-1]);
+                    solutionFound = false;
+                    break;
+                }
+                else 
+                {
+                    mpath[i]->stateValid = true;
+
+                    mpath[i-1]->valid = true;
+                    mpath[i-1]->stateValid = true;
+                }
+            }
+
+            if (solutionFound)
+            {
+                // set the solution path
+                auto path(std::make_shared<PathGeometric>(si_));
+                for (int i = mpath.size() - 1; i >= 0; --i)
+                    path->append(mpath[i]->state);
+
+                pdef_->addSolutionPath(path, false, distsol, getName());
+            }
+        }
+    }
+
+    si_->freeState(xstate);
+    si_->freeState(rstate);
+    delete rmotion;
+
+    OMPL_INFORM("%s: Created %u states", getName().c_str(), nn_->size());
+
+    return solutionFound ? base::PlannerStatus::EXACT_SOLUTION : base::PlannerStatus::TIMEOUT;
+}
+
+void ompl::geometric::LSC::removeMotion(Motion *motion)
+{
+    nn_->remove(motion);
+
+    /* remove self from parent list */
+
+    if (motion->parent != nullptr)
+    {
+        for (unsigned int i = 0; i < motion->parent->children.size(); ++i)
+            if (motion->parent->children[i] == motion)
+            {
+                motion->parent->children.erase(motion->parent->children.begin() + i);
+                break;
+            }
+    }
+
+    /* remove children */
+    for (auto &i : motion->children)
+    {
+        i->parent = nullptr;
+        removeMotion(i);
+    }
+
+    if (motion->state != nullptr)
+        si_->freeState(motion->state);
+    delete motion;
+}
+
+// grow
+bool ompl::geometric::LSC::isValid(const base::State *state, base::SafetyCertificate *&csc)
+{
+    csc = nullptr;
+
+    base::SafetyCertificate *sc = new base::SafetyCertificate(si_);
+    si_->copyState(sc->state, state);
+
+    std::vector<base::SafetyCertificate *> nsc;
+    bool osc = false;
+
+    if (onn_->size() > 0)
+    {
+        nsc.clear();
+
+        onn_->nearestK(sc, collisionConfidence_, nsc);
+
+        collisionCertificateChecker_(sc->state, nsc, osc, csc);
+
+        if (osc)
+        {	
+            si_->freeState(sc->state);
+            delete sc->contact;
+            delete sc;
+
+            return false;
+        }
+    }
+
+    double dist = 0.0;
+    bool valid = true;
+
+    if (si_->isValid(sc->state, *sc->contact, dist))
+    {
+        sc->confidence_ = confidence_;
+        snn_->add(sc);
+        csc = sc;
+        delete sc->contact;
+        sc->contact = nullptr;
+    }
+    else
+    {			
+        valid = false;
+        if (dist < 0.0)
+        {
+            onn_->add(sc);
+        }
+        else 
+        {
+            si_->freeState(sc->state);
+            delete sc->contact;
+            delete sc;
+        }
+    }
+
+    return valid;
+}
+
+bool ompl::geometric::LSC::isValidExact(const base::State *state, base::SafetyCertificate *&csc)
+{
+    csc = nullptr;
+
+    base::SafetyCertificate *sc = new base::SafetyCertificate(si_);
+    si_->copyState(sc->state, state);
+
+    bool valid = true;
+    double dist = 0.0;
+    
+    if (si_->isValid(sc->state, *sc->contact, dist))
+    {
+        sc->confidence_ =  confidence_;
+        snn_->add(sc);
+        csc = sc;
+        delete sc->contact;
+        sc->contact = nullptr;
+    }
+    else
+    {			
+        valid = false;
+        if (dist < 0.0)
+        {
+            onn_->add(sc);
+        }
+        else 
+        {
+            si_->freeState(sc->state);
+            delete sc->contact;
+            delete sc;
+        }
+    }
+
+    return valid;
+}
+
+// check
+bool ompl::geometric::LSC::isValid(Motion *motion)
+{
+    if (!motion->stateValid)
+    {
+        const base::State *state = motion->state;
+        base::SafetyCertificate *sc = motion->sc;
+
+        if (si_->isValid(state))
+        {
+            sc->valid_++;
+
+            return true;
+        }
+        else 
+        {
+            sc->valid_ = 0;
+            if (sc->lockConfidence_)
+            {
+                if (sc->estates_.size() < 10)
+                {
+                    double erange = 0.05 * si_->distance(sc->state, state);
+                    sc->erange_.push_back(erange);
+
+                    base::State *estate = si_->allocState();
+                    si_->copyState(estate, state);
+                    sc->estates_.push_back(estate);
+                }
+                else 
+                {
+                    double dist = sc->confidence_;
+                    unsigned int best = 0;
+                    for (unsigned int i = 0; i < sc->estates_.size(); i++)
+                    {
+                        double tempd = si_->distance(sc->estates_[i], state);
+                        if (tempd < dist)
+                        {
+                            dist = tempd;
+                            best = i;
+                        }
+                    }
+                    sc->erange_[best] = 1.2 * dist;
+                }
+            }
+
+            return false;
+        }
+    }
+    else
+        return true;
+}
+
+bool ompl::geometric::LSC::checkStartMotion(Motion *motion1, Motion *motion2, bool &stateValid)
+{
+    stateValid = isValid(motion1);
+
+    if (!stateValid)
+        return false;
+
+    bool result = true;
+
+    if (!motion2->valid)
+    {
+        if (!isValid(motion2))
+            return false;
+
+        const base::State *s1 = motion1->state, *s2 = motion2->state;
+
+        int nd = si_->getStateSpace()->validSegmentCount(s1, s2);
+
+        if (nd >= 2)
+        {
+            std::queue<std::pair<int, int>> pos;
+            pos.emplace(1, nd - 1);
+
+            /* temporary storage for the checked state */
+            base::State *test = si_->allocState();
+
+            bool first = true;
+
+            /* repeatedly subdivide the path segment in the middle (and check the middle) */
+            while (!pos.empty())
+            {
+                std::pair<int, int> x = pos.front();
+
+                int mid = (x.first + x.second) / 2;
+                si_->getStateSpace()->interpolate(s1, s2, (double)mid / (double)nd, test);
+
+                if (first && onn_->size() > 0)
+                {
+                    first = false;
+
+                    base::SafetyCertificate *sc = new base::SafetyCertificate(si_), *csc;
+                    si_->copyState(sc->state, test);
+
+                    std::vector<base::SafetyCertificate *> nsc;
+                    bool osc = false;
+
+                    onn_->nearestK(sc, 1, nsc);
+
+                    collisionCertificateChecker_(sc->state, nsc, osc, csc);
+
+                    si_->freeState(sc->state);
+                    delete sc->contact;
+                    delete sc;
+
+                    if (osc)
+                    {	
+                        result = false;
+                        break;
+                    }
+                }
+
+                if (!si_->isValid(test))
+                {
+                    result = false;
+                    break;
+                }
+
+                pos.pop();
+
+                if (x.first < mid)
+                    pos.emplace(x.first, mid - 1);
+                if (x.second > mid)
+                    pos.emplace(mid + 1, x.second);
+            }
+
+            si_->freeState(test);
+        }
+    }
+
+    return result;
+}
+
+void ompl::geometric::LSC::getPlannerData(base::PlannerData &data) const
+{
+    Planner::getPlannerData(data);
+
+    std::vector<Motion *> motions;
+    if (nn_)
+        nn_->list(motions);
+
+    for (auto & motion : motions)
+    {
+        if (motion->parent == nullptr)
+            data.addStartVertex(base::PlannerDataVertex(motion->state));
+        else
+            data.addEdge(base::PlannerDataVertex(motion->parent != nullptr ? motion->parent->state : nullptr),
+                         base::PlannerDataVertex(motion->state));
+
+        data.tagState(motion->state, (motion->valid && motion->stateValid) ? 1 : 0);
+    }
+}
+

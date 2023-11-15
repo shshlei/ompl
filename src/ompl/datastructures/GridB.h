@@ -188,12 +188,12 @@ namespace ompl
             this->neighbors(cell->coord, *list);
 
             std::vector<bool> wasBorder;
-            cell->nnbh.reserve(list->size());
+            cell->nbh.reserve(list->size());
             wasBorder.reserve(list->size());
             for (auto & cl : *list)
             {
-                cell->nnbh.push_back(cl);
-                cl->nnbh.push_back(cell);
+                cell->nbh.push_back(cl);
+                cl->nbh.push_back(cell);
                 wasBorder.push_back(cl->border);
                 cl->neighbors++;
                 if (cl->border && cl->neighbors >= GridN<_T>::interiorCellNeighborsLimit_)
@@ -205,7 +205,7 @@ namespace ompl
                 std::size_t i = 0;
                 for (auto & cl : *list)
                 {
-                    if (!cl->removed)
+                    if (!cl->lazilyRemoved)
                     {
                         CellX *c = static_cast<CellX *>(cl);
                         eventCellUpdate_(c, eventCellUpdateData_);
@@ -250,7 +250,7 @@ namespace ompl
 
             cell->neighbors = GridN<_T>::numberOfBoundaryDimensions(cell->coord);
             if (GridN<_T>::removed_)
-                cell->neighbors += std::accumulate(list->begin(), list->end(), 0, [](int a, Cell *b){ int bb = b->removed ? 0 : 1; return a + bb;});
+                cell->neighbors += std::accumulate(list->begin(), list->end(), 0, [](int a, Cell *b){ int bb = b->lazilyRemoved ? 0 : 1; return a + bb;});
             else
                 cell->neighbors += list->size();
             if (cell->border && cell->neighbors >= GridN<_T>::interiorCellNeighborsLimit_)
@@ -281,33 +281,71 @@ namespace ompl
         {
             if (!cell)
                 return false;
-
-            std::vector<bool> wasBorder;
-            wasBorder.reserve(cell->nnbh.size());
-            for (auto & cl : cell->nnbh)
+            if (cell->lazilyRemoved)
             {
-                wasBorder.push_back(cl->border);
-                cl->neighbors--;
-                if (!cl->border && cl->neighbors < GridN<_T>::interiorCellNeighborsLimit_)
-                    cl->border = true;
-
-                for (std::size_t i = cl->nnbh.size() - 1; i < cl->nnbh.size(); i--)
+                for (auto & cl : cell->nbh)
                 {
-                    if (cl->nnbh[i] == cell)
+                    for (std::size_t i = cl->nbh.size() - 1; i < cl->nbh.size(); i--)
                     {
-                        std::iter_swap(cl->nnbh.begin() + i, cl->nnbh.end() - 1);
-                        cl->nnbh.pop_back();
-                        break;
+                        if (cl->nbh[i] == cell)
+                        {
+                            std::iter_swap(cl->nbh.begin() + i, cl->nbh.end() - 1);
+                            cl->nbh.pop_back();
+                            break;
+                        }
                     }
                 }
             }
-
-            if (GridN<_T>::removed_)
+            else
             {
-                std::size_t i = 0;
-                for (auto & cl : cell->nnbh)
+                std::vector<bool> wasBorder;
+                wasBorder.reserve(cell->nbh.size());
+                for (auto & cl : cell->nbh)
                 {
-                    if (!cl->removed)
+                    wasBorder.push_back(cl->border);
+                    cl->neighbors--;
+                    if (!cl->border && cl->neighbors < GridN<_T>::interiorCellNeighborsLimit_)
+                        cl->border = true;
+                    for (std::size_t i = cl->nbh.size() - 1; i < cl->nbh.size(); i--)
+                    {
+                        if (cl->nbh[i] == cell)
+                        {
+                            std::iter_swap(cl->nbh.begin() + i, cl->nbh.end() - 1);
+                            cl->nbh.pop_back();
+                            break;
+                        }
+                    }
+                }
+
+                if (GridN<_T>::removed_)
+                {
+                    std::size_t i = 0;
+                    for (auto & cl : cell->nbh)
+                    {
+                        if (!cl->lazilyRemoved)
+                        {
+                            CellX *c = static_cast<CellX *>(cl);
+                            eventCellUpdate_(c, eventCellUpdateData_);
+                            if (c->border)
+                            {
+                                if (wasBorder[i])
+                                    external_.update(reinterpret_cast<typename externalBHeap::Element *>(c->heapElement));
+                                else
+                                {
+                                    internal_.remove(reinterpret_cast<typename internalBHeap::Element *>(c->heapElement));
+                                    external_.insert(c);
+                                }
+                            }
+                            else
+                                internal_.update(reinterpret_cast<typename internalBHeap::Element *>(c->heapElement));
+                        }
+                        i++;
+                    }
+                }
+                else 
+                {
+                    std::size_t i = 0;
+                    for (auto & cl : cell->nbh)
                     {
                         CellX *c = static_cast<CellX *>(cl);
                         eventCellUpdate_(c, eventCellUpdateData_);
@@ -323,45 +361,7 @@ namespace ompl
                         }
                         else
                             internal_.update(reinterpret_cast<typename internalBHeap::Element *>(c->heapElement));
-                    }
-                    i++;
-                }
-            }
-            else 
-            {
-                std::size_t i = 0;
-                for (auto & cl : cell->nnbh)
-                {
-                    CellX *c = static_cast<CellX *>(cl);
-                    eventCellUpdate_(c, eventCellUpdateData_);
-                    if (c->border)
-                    {
-                        if (wasBorder[i])
-                            external_.update(reinterpret_cast<typename externalBHeap::Element *>(c->heapElement));
-                        else
-                        {
-                            internal_.remove(reinterpret_cast<typename internalBHeap::Element *>(c->heapElement));
-                            external_.insert(c);
-                        }
-                    }
-                    else
-                        internal_.update(reinterpret_cast<typename internalBHeap::Element *>(c->heapElement));
-                    i++;
-                }
-            }
-
-            for (std::size_t i = 1; i < cell->nbh.size(); i++)
-            {
-                for (std::size_t j = 0; j < cell->nbh[i].size(); j++)
-                {
-                    Cell* cl = cell->nbh[i][j];
-                    for (std::size_t k = 0; k < cl->nbh[i].size(); k++)
-                    {
-                        if (cl->nbh[i][k] == cell)
-                        {
-                            cl->nbh[i].erase(cl->nbh[i].begin() + k);
-                            break;
-                        }
+                        i++;
                     }
                 }
             }
@@ -370,31 +370,35 @@ namespace ompl
             if (pos != GridN<_T>::hash_.end())
             {
                 GridN<_T>::hash_.erase(pos);
-                auto *cx = static_cast<CellX *>(cell);
-                if (cx->border)
-                    external_.remove(reinterpret_cast<typename externalBHeap::Element *>(cx->heapElement));
+                if (cell->lazilyRemoved)
+                    GridN<_T>::removed_--;
                 else
-                    internal_.remove(reinterpret_cast<typename internalBHeap::Element *>(cx->heapElement));
+                {
+                    auto *cx = static_cast<CellX *>(cell);
+                    if (cx->border)
+                        external_.remove(reinterpret_cast<typename externalBHeap::Element *>(cx->heapElement));
+                    else
+                        internal_.remove(reinterpret_cast<typename internalBHeap::Element *>(cx->heapElement));
+                }
                 return true;
             }
             return false;
         }
 
         /// Remove a cell from the grid
-        virtual bool lazyRemove(Cell *cell)
+        bool lazyRemove(Cell *cell) override
         {
             if (!cell)
                 return false;
-            if (cell->removed)
+            if (cell->lazilyRemoved)
                 return false;
-            for (auto & cl : cell->nnbh)
+            for (auto & cl : cell->nbh)
             {
                 bool wasBorder = cl->border;
                 cl->neighbors--;
                 if (!cl->border && cl->neighbors < GridN<_T>::interiorCellNeighborsLimit_)
                     cl->border = true;
-
-                if (!cl->removed)
+                if (!cl->lazilyRemoved)
                 {
                     CellX *c = static_cast<CellX *>(cl);
                     eventCellUpdate_(c, eventCellUpdateData_);
@@ -412,11 +416,10 @@ namespace ompl
                         internal_.update(reinterpret_cast<typename internalBHeap::Element *>(c->heapElement));
                 }
             }
-
             auto pos = GridN<_T>::hash_.find(&cell->coord);
             if (pos != GridN<_T>::hash_.end())
             {
-                cell->removed = true;
+                cell->lazilyRemoved = true;
                 GridN<_T>::removed_++;
                 auto *cx = static_cast<CellX *>(cell);
                 if (cx->border)
@@ -429,20 +432,19 @@ namespace ompl
         }
 
         /// Lazily add the cell to the grid
-        virtual void lazyAdd(Cell *cell)
+        bool lazyAdd(Cell *cell) override
         {
             if (!cell)
-                return;
-            if (!cell->removed)
-                return;
-            for (auto & cl : cell->nnbh)
+                return false;
+            if (!cell->lazilyRemoved)
+                return false;
+            for (auto & cl : cell->nbh)
             {
                 bool wasBorder = cl->border;
                 cl->neighbors++;
                 if (cl->border && cl->neighbors >= GridN<_T>::interiorCellNeighborsLimit_)
                     cl->border = false;
-
-                if (!cl->removed)
+                if (!cl->lazilyRemoved)
                 {
                     CellX *c = static_cast<CellX *>(cl);
                     eventCellUpdate_(c, eventCellUpdateData_);
@@ -460,20 +462,20 @@ namespace ompl
                     }
                 }
             }
-
             auto *ccell = static_cast<CellX *>(cell);
             eventCellUpdate_(ccell, eventCellUpdateData_);
             if (cell->border)
                 external_.insert(ccell);
             else
                 internal_.insert(ccell);
-
             auto pos = GridN<_T>::hash_.find(&cell->coord);
             if (pos != GridN<_T>::hash_.end())
             {
-                cell->removed = false;
+                cell->lazilyRemoved = false;
                 GridN<_T>::removed_--;
+                return true;
             }
+            return false;
         }
 
         void clear() override

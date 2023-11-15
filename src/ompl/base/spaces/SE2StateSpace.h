@@ -126,10 +126,6 @@ namespace ompl
                 return as<RealVectorStateSpace>(0)->getBounds();
             }
 
-            void resize(std::size_t /*size*/)
-            {
-            }
-
             State *allocState() const override;
             void freeState(State *state) const override;
 

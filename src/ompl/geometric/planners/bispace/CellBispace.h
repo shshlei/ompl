@@ -34,18 +34,16 @@
 
 /* Author: Shi Shenglei*/
 
-#ifndef OMPL_GEOMETRIC_PLANNERS_HSC_BIHSCCELL_
-#define OMPL_GEOMETRIC_PLANNERS_HSC_BIHSCCELL_
+#ifndef OMPL_GEOMETRIC_PLANNERS_BISPACE_CELLBISPACE_
+#define OMPL_GEOMETRIC_PLANNERS_BISPACE_CELLBISPACE_
 
 #include "ompl/geometric/planners/PlannerIncludes.h"
-#include "ompl/geometric/planners/hsc/CellDiscretizationN.h"
-
-#include "ompl/datastructures/NearestNeighbors.h"
+#include "ompl/geometric/planners/bispace/CellDiscretization.h"
 
 #include "ompl/base/State.h"
-#include "ompl/base/SafetyCertificate.h"
 #include "ompl/base/OptimizationObjective.h"
 #include "ompl/base/ProjectionEvaluator.h"
+#include "ompl/datastructures/BinaryHeap.h"
 
 #include <unordered_set>
 
@@ -53,21 +51,14 @@ namespace ompl
 {
     namespace geometric
     {
-        /** \brief Bidirectional Hybrid Safety Certificate Using Cell Exploration */
-        class BiHSCCell : public base::Planner
+        /** \brief Cell Bispace */
+        class CellBispace : public base::Planner
         {
         public:
-            /** \brief Check if the state is certificated as collision-free by sc, and return the certificate distances */
-            using SafetyCertificateChecker = std::function<bool(const base::State *state, const base::SafetyCertificate *sc, std::vector<double> &dist)>;
 
-            using CollisionCertificateChecker = std::function<bool(const base::State *state, const std::vector<base::SafetyCertificate *> &ocv)>;
+            CellBispace(const base::SpaceInformationPtr &si);
 
-            /** \brief Calculate the certificate distances between two states */
-            using DistanceCertificate = std::function<std::vector<double>(const base::State *a, const base::State *b)>;
-
-            BiHSCCell(const base::SpaceInformationPtr &si);
-
-            ~BiHSCCell() override;
+            ~CellBispace() override = default;
 
             void setup() override;
 
@@ -87,32 +78,8 @@ namespace ompl
                 return maxDistance_;
             }
             
-            void setPenDistance(double distance)
-            {
-                penDistance_ = distance;
-            }
-
-            double getPenDistance() const
-            {
-                return penDistance_;
-            }
-
-            void setLazyPath(bool lazy)
-            {
-                lazyPath_ = lazy;
-                if (!lazyPath_)
-                    lazyNode_ = false;
-            }
-
-            bool getLazyPath() const
-            {
-                return lazyPath_;
-            }
-
             void setLazyNode(bool lazy)
             {
-                if (lazy)
-                    lazyPath_ = true;
                 lazyNode_ = lazy;
             }
 
@@ -121,16 +88,6 @@ namespace ompl
                 return lazyNode_;
             }
 
-            void setBatchSize(unsigned int batch)
-            {
-                batch_ = batch;
-            }
-
-            unsigned int getBatchSize() const
-            {
-                return batch_;
-            }
-            
             void setAddIntermediateState(bool add)
             {
                 addIntermediateState_ = add;
@@ -141,27 +98,8 @@ namespace ompl
                 return addIntermediateState_;
             }
 
-            /** \brief When extending a motion, the planner can decide
-                to keep the first valid part of it, even if invalid
-                states are found, as long as the valid part represents
-                a sufficiently large fraction from the original
-                motion. This function sets the minimum acceptable
-                fraction. */
-            void setMinValidPathFraction(double fraction)
-            {
-                minValidPathFraction_ = fraction;
-            }
-
-            /** \brief Get the value of the fraction set by setMinValidPathFraction() */
-            double getMinValidPathFraction() const
-            {
-                return minValidPathFraction_;
-            }
-
             void setUseBispace(bool bispace)
             {
-                if (!bispace)
-                    treatedAsMultiSubapce_ = false;
                 useBispace_ = bispace;
             }
 
@@ -170,73 +108,14 @@ namespace ompl
                 return useBispace_;
             }
 
-            void setTreatedAsMultiSubapce(bool sub)
+            void setBackRewire(bool rewire)
             {
-                treatedAsMultiSubapce_ = sub;
-                if (!useBispace_ && sub)
-                {
-                    OMPL_WARN("%s: The treate as multisubspace feature is not usable since the bispace feature is not set.", getName().c_str());
-                    treatedAsMultiSubapce_ = false;
-                }
-                if (treatedAsMultiSubapce_)
-                {
-                    OMPL_WARN("%s: The treate as multisubspace feature is implemented in combination with the feature cell CellDiscretization.", getName().c_str());
-                    treatedAsMultiSubapce_ = false;
-                }
+                backRewire_ = rewire;
             }
 
-            bool getTreatedAsMultiSubapce() const
+            bool getBackRewire() const
             {
-                return treatedAsMultiSubapce_;
-            }
-
-            /** \brief Set the projection evaluator. This class is
-                able to compute the projection of a given state. */
-            void setProjectionEvaluator(const base::ProjectionEvaluatorPtr &projectionEvaluator)
-            {
-                projectionEvaluator_ = projectionEvaluator;
-            }
-
-            /** \brief Set the projection evaluator (select one from
-                the ones registered with the state space). */
-            void setProjectionEvaluator(const std::string &name)
-            {
-                projectionEvaluator_ = si_->getStateSpace()->getProjection(name);
-            }
-
-            /** \brief Get the projection evaluator. */
-            const base::ProjectionEvaluatorPtr &getProjectionEvaluator() const
-            {
-                return projectionEvaluator_;
-            }
-
-            /** \brief Set the fraction of time for focusing on the
-                border (between 0 and 1). This is the minimum fraction
-                used to select cells that are exterior (minimum
-                because if 95% of cells are on the border, they will
-                be selected with 95% chance, even if this fraction is
-                set to 90%)*/
-            void setBorderFraction(double bp)
-            {
-                dStart_.setBorderFraction(bp);
-                dGoal_.setBorderFraction(bp);
-            }
-
-            /** \brief Get the fraction of time to focus exploration
-                on boundary */
-            double getBorderFraction() const
-            {
-                return dStart_.getBorderFraction();
-            }
-
-            void setRewire(bool rewire)
-            {
-                rewire_ = rewire;
-            }
-
-            bool getRewire() const
-            {
-                return rewire_;
+                return backRewire_;
             }
 
             void setRewireSort(bool rewire)
@@ -247,51 +126,6 @@ namespace ompl
             bool getRewireSort() const
             {
                 return rewireSort_;
-            }
-
-            void setStrictCertificate(bool strictCertificate)
-            {
-                strictCertificate_ = strictCertificate;
-            }
-
-            bool getStrictCertificate() const
-            {
-                return strictCertificate_;
-            }
-
-            void setUseCollisionCertificateChecker(bool use)
-            {
-                useCollisionCertificateChecker_ = use;
-            }
-
-            bool getUseCollisionCertificateChecker() const
-            {
-                return useCollisionCertificateChecker_;
-            }
-
-            void setSafetyCertificateChecker(const SafetyCertificateChecker &safetyCertificateChecker)
-            {
-                safetyCertificateChecker_ = safetyCertificateChecker;
-            }
-
-            void setCollisionCertificateChecker(const CollisionCertificateChecker &collisionCertificateChecker)
-            {
-                collisionCertificateChecker_ = collisionCertificateChecker;
-            }
-
-            void setDistanceCertificate(const DistanceCertificate &distanceCertificate)
-            {
-                distanceCertificate_ = distanceCertificate;
-            }
-
-            void setCertificateDim(unsigned int certificateDim)
-            {
-                certificateDim_ = certificateDim;
-            }
-
-            unsigned int getCertificateDim() const 
-            {
-                return certificateDim_;
             }
 
         protected:
@@ -306,7 +140,7 @@ namespace ompl
             };
 
             class Motion;
-            using CellDiscretizationData = CellDiscretizationN<Motion>; 
+            using CellDiscretizationData = CellDiscretization<Motion>; 
             using Cell = CellDiscretizationData::Cell;
             using Coord = CellDiscretizationData::Coord;
 
@@ -389,7 +223,7 @@ namespace ompl
                 /** \brief Order function */
                 bool operator()(const Cell *const a, const Cell *const b) const
                 {
-                    return 100 * a->auxData->root + a->auxData->disabled < 100 * b->auxData->root + b->auxData->disabled;
+                    return a->data->disabled < b->data->disabled;
                 }
             };
 
@@ -402,20 +236,14 @@ namespace ompl
                 /** \brief Order function */
                 bool operator()(const Cell *const a, const Cell *const b) const
                 {
-                    if (a->auxData->cmotion && b->auxData->cmotion)
-                        return opt_->isCostBetterThan(b->auxData->cmotion->cost, a->auxData->cmotion->cost);
+                    if (a->data->cmotion && b->data->cmotion)
+                        return opt_->isCostBetterThan(b->data->cmotion->cost, a->data->cmotion->cost);
                     else
-                        return b->auxData->cmotion;
+                        return b->data->cmotion;
                 }
 
                 /** \brief Pointer to the Optimization Objective */
                 base::OptimizationObjectivePtr opt_;
-            };
-
-            struct SafetyCertificateWithElems 
-            {
-                base::SafetyCertificate *sc;
-                std::vector<Motion *> objects;
             };
 
             /** \brief Representation of a motion */
@@ -462,11 +290,6 @@ namespace ompl
 
                 /** \brief Handle to identify the motion in the queue */
                 BinaryHeap<Motion *, MotionCompare>::Element *handle{nullptr};
-
-                SafetyCertificateWithElems *sce{nullptr};
-
-                /** \brief The certificate distance between the motion and its certificate node */
-                std::vector<double> scd;
             };
 
             /** \brief Information attached to growing a tree of motions (used internally) */
@@ -477,27 +300,24 @@ namespace ompl
                 bool start;
             };
 
+            base::PlannerStatus prepareSolve(const base::PlannerTerminationCondition &ptc);
+
             void processSolution(const Motion *bestStartMotion, const Motion *bestGoalMotion);
 
             bool batchGrow(bool &startTree);
 
-            bool growCurrentTree(const base::State *state) const;
+            /** feasible */
+            bool growTree(TreeGrowingInfo &tgi);
 
-            bool growStartTree(const base::State *state) const;
-
-            double penetrationDistance(const base::State *nstate, const base::State *state, bool start) const;
-
-            bool growCurrentTree(const base::State *state, std::size_t sub) const;
-
-            bool growStartTree(const base::State *state, std::size_t sub) const;
-
-            double penetrationDistance(const base::State *nstate, const base::State *state, bool start, std::size_t sub) const;
+            Motion* backGrowTree(Motion *root, base::State *dstate, bool start);
 
             void rewireTree(BinaryHeap<Motion *, MotionCompare> &bh, Motion *m, bool start);
 
             void updateQueue(BinaryHeap<Motion *, MotionCompare> &bh, Motion *m);
 
-            bool isPathValid(Motion *motion, Motion *otherMotion, bool start);
+            bool growCurrentTree(const base::State *state, bool start) const;
+
+            bool backPathRewireMotionSimple(Motion *motion, bool start, Motion *&pmotion);
 
             /** \brief Check if the connected path is valid */
             bool isPathValid(Motion *motion, Motion *otherMotion);
@@ -506,24 +326,20 @@ namespace ompl
             bool isPathValid(Motion *motion, bool start);
 
             /** \brief Check from the connect point to the root */
-            bool isStateValid(Motion *motion, bool start);
-
-            /** \brief Check from the connect point to the root */
             bool isPathValidInter(Motion *motion, bool start);
 
-            void removeInvalidMotionsDirectly();
+            /** \brief Check from the connect point to the root */
+            bool isStateValid(Motion *motion, bool start);
 
-            void removeInvalidMotionsDirectlyDisc();
-
-            void removeFromDisc(CellDiscretizationData &disc, Motion *motion);
+            bool backPathRewireMotion(Motion *motion, bool start, Motion *&pmotion);
 
             void removeInvalidMotions();
 
             void removeInvalidMotionsDisc();
 
-            void enableMotionInDisc(CellDiscretizationData &disc, Motion *motion);
+            void enableMotionInDisc(Motion *motion);
 
-            void enableMotionInDisc2(Motion *motion, std::unordered_set<Cell *> &cells);
+            void enableMotionInDiscWithRewireSort(Motion *motion);
 
             void disableCheck(Motion *motion, const std::string &context) const;
 
@@ -531,12 +347,6 @@ namespace ompl
 
             /** \brief Updates the cost of the children of this node if the cost up to this node has changed */
             void updateChildCosts(Motion *motion) const;
-
-            bool checkStartMotion(Motion *smotion, Motion *gmotion);
-
-            bool checkGoalMotion(Motion *smotion, Motion *gmotion);
-
-            bool checkInterMotion(Motion *smotion, Motion *gmotion, bool start);
 
             void insertNeighbor(Motion *pmotion, Motion *motion);
 
@@ -559,9 +369,23 @@ namespace ompl
 
             void setMotionInfinityCost(Motion *motion) const;
 
-            void setMotionInfinityCostWithDisable(Motion *motion, std::unordered_set<Cell *> &cells) const;
+            void setMotionInfinityCostWithRewireSort(Motion *motion, std::unordered_set<Cell *> &cells) const;
 
-            void getPlannerData(base::PlannerData &data, Motion *motion, int tag) const;
+            // check 
+            bool isValid(const base::State *state);
+
+            // check
+            bool isValid(Motion *motion, bool start);
+
+            bool checkMotion(Motion *pmotion, Motion *motion, bool start);
+
+            bool checkInterMotion(Motion *pmotion, Motion *motion, bool start);
+
+            bool checkInterMotion1(Motion *smotion, Motion *gmotion, bool start);
+
+            bool checkInterMotion2(Motion *smotion, Motion *gmotion, bool start);
+
+            void addIntermediateMotion(Motion *pmotion, Motion *motion, bool start, Motion *last);
 
             base::ProjectionEvaluatorPtr projectionEvaluator_;
 
@@ -588,28 +412,21 @@ namespace ompl
             /** \brief The pair of motions in each tree connected during planning. */
             std::vector<std::pair<Motion *, Motion *>> connectionPoint_;
 
+            Coord scoord_;
+            Eigen::VectorXd dcoord_;
+            double dc_;
+
             double maxDistance_{0.0};
-
-            double penDistance_{0.0};
-
-            /** \brief When extending a motion, the planner can decide
-                to keep the first valid part of it, even if invalid
-                states are found, as long as the valid part represents
-                a sufficiently large fraction from the original
-                motion */
-            double minValidPathFraction_{0.5};
-
-            bool lazyPath_{true};
 
             bool lazyNode_{true};
 
             bool addIntermediateState_{true};
 
-            bool rewire_{true};
+            bool backRewire_{true};
 
             bool rewireSort_{true};
 
-            unsigned int batch_{10};
+            bool symmetric_{true};
 
             /** \brief Objective we're optimizing */
             base::OptimizationObjectivePtr opt_;
@@ -632,81 +449,8 @@ namespace ompl
             ////////////////////////////////////////////////////////////////////////////////////////////////////
             // bispace 
             bool useBispace_{true};
-
-            bool treatedAsMultiSubapce_{false};
-
-
-            ////////////////////////////////////////////////////////////////////////////////////////////////////
-            // safety certificate 
-            /** \brief Compute distance between motions (actually distance between contained states) */
-            double distanceFunction(const Motion *a, const Motion *b) const
-            {
-                return si_->distance(a->state, b->state);
-            }
-
-            double distanceFunction(const base::SafetyCertificate *a, const base::SafetyCertificate *b) const
-            {
-                std::vector<double> cdist = distanceCertificate_(a->state, b->state);
-                double dist = std::accumulate(cdist.begin(), cdist.end(), 0.0);
-                return dist;
-            }
-
-            base::PlannerStatus prepareSolve(const base::PlannerTerminationCondition &ptc);
-
-            /** feasible */
-            void growTree(TreeGrowingInfo &tgi, Motion *& startMotion, Motion *& goalMotion);
-
-//            GrowState biasGrow(TreeData &tree, TreeGrowingInfo &tgi, Motion *&rmotion);
-
-            // check 
-            bool isValid(base::SafetyCertificate *sc);
-
-            bool isValid(const base::State *state);
-
-            // check
-            bool isValid(Motion *motion, bool start, bool add = false);
-
-            void removeInvalidCertificate(Motion *motion, bool start);
-
-            bool checkInterMotion1(Motion *smotion, Motion *gmotion, bool start);
-
-            bool checkInterMotion2(Motion *smotion, Motion *gmotion, bool start);
-
-            void addIntermediateMotion(Motion *smotion, Motion *gmotion, bool start, Motion *last);
-
-            bool backPathRewireMotion(Motion *motion, bool start, Motion *&pmotion);
-
-            /** \brief Free the memory allocated by this planner */
-            void freeMemory();
-
-            void freeCertificate(base::SafetyCertificate *sc)
-            {
-                if (sc->state)
-                    si_->freeState(sc->state);
-                if (sc->contact)
-                    delete sc->contact;
-                delete sc;
-            }
-
-            std::vector<SafetyCertificateWithElems *> snne_;
-
-            std::shared_ptr<NearestNeighbors<base::SafetyCertificate *>> onn_;
-
-            SafetyCertificateChecker safetyCertificateChecker_;
-
-            CollisionCertificateChecker collisionCertificateChecker_;
-
-            DistanceCertificate distanceCertificate_;
-
-            unsigned int oscNum_{20};
-
-            unsigned int certificateDim_{1u};
-
-            /** \brief Whether or not calculate the exact certificate distance according the graph data structure. */
-            bool strictCertificate_{false};
-
-            bool useCollisionCertificateChecker_{false};
         };
     }
 }
+
 #endif

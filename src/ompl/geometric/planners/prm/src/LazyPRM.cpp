@@ -424,7 +424,7 @@ ompl::base::PlannerStatus ompl::geometric::LazyPRM::solve(const base::PlannerTer
         pdef_->addSolutionPath(psol);
     }
 
-    OMPL_INFORM("%s: Created %u states", getName().c_str(), boost::num_vertices(g_) - nrStartStates);
+    OMPL_INFORM("%s: Created %u states, solution cost %.5f", getName().c_str(), boost::num_vertices(g_) - nrStartStates, bestCost_.value());
 
     return bestSolution ? base::PlannerStatus::EXACT_SOLUTION : base::PlannerStatus::TIMEOUT;
 }

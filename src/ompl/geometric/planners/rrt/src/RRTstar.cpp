@@ -352,7 +352,7 @@ ompl::base::PlannerStatus ompl::geometric::RRTstar::solve(const base::PlannerTer
                     }
                     else if (!useKNearest_ || si_->distance(nbh[*i]->state, motion->state) < maxDistance_) 
                     {
-                        bool cvalid = si_->checkMotion(nbh[*i]->state, motion->state);
+                        bool cvalid = si_->checkMotion(nbh[*i]->state, motion->state, true);
                         if (cvalid)
                         {
                             motion->incCost = incCosts[*i];
@@ -383,7 +383,7 @@ ompl::base::PlannerStatus ompl::geometric::RRTstar::solve(const base::PlannerTer
                         {
                             if (!useKNearest_ || si_->distance(nbh[i]->state, motion->state) < maxDistance_)
                             {
-                                bool cvalid = si_->checkMotion(nbh[i]->state, motion->state);
+                                bool cvalid = si_->checkMotion(nbh[i]->state, motion->state, true);
                                 if (cvalid)
                                 {
                                     motion->incCost = incCosts[i];
@@ -439,7 +439,7 @@ ompl::base::PlannerStatus ompl::geometric::RRTstar::solve(const base::PlannerTer
                             motionValid = (!useKNearest_ || si_->distance(nbh[i]->state, motion->state) < maxDistance_); 
                             if (motionValid)
                             {
-                                motionValid = si_->checkMotion(motion->state, nbh[i]->state);
+                                motionValid = si_->checkMotion(motion->state, nbh[i]->state, true);
                             }
                         }
                         else

@@ -41,7 +41,7 @@
 
 #include "ompl/datastructures/NearestNeighbors.h"
 #include "ompl/datastructures/BinaryHeap.h"
-#include "ompl/datastructures/GridN.h"
+#include "ompl/datastructures/GridNR.h"
 #include "ompl/datastructures/Grid.h"
 #include "ompl/datastructures/PDF.h"
 
@@ -166,6 +166,16 @@ namespace ompl
                 return rewireSort_;
             }
 
+            void setUpdateNbCell(bool update)
+            {
+                updateNbCell_ = update;
+            }
+
+            bool getUpdateNbCell() const
+            {
+                return updateNbCell_;
+            }
+
             void setInformedSampling(bool informedSampling)
             {
                 useInformedSampling_ = informedSampling;
@@ -219,7 +229,7 @@ namespace ompl
                 std::size_t disabled{0};
             };
 
-            using CellDiscretizationData = GridN<CellData *>;
+            using CellDiscretizationData = GridNR<CellData *>;
             using Cell = CellDiscretizationData::Cell;
             using Coord = CellDiscretizationData::Coord;
 
@@ -516,6 +526,8 @@ namespace ompl
 
             bool symmetric_{true};
 
+            bool updateNbCell_{false};
+
             /** \brief Objective we're optimizing */
             base::OptimizationObjectivePtr opt_;
 
@@ -627,7 +639,7 @@ namespace ompl
             using NumPdf = PDF<std::size_t>;
             using NumElem = NumPdf::Element;
             
-            void processAdEllipsoidRind(bool clearoradd, bool &ais, unsigned int &adinfcount);
+            void processAdEllipsoidRind(bool clearoradd, unsigned int &adinfcount);
 
             /** \brief Create the samplers */
             base::AdInformedSamplerPtr allocInfSampler(const base::State *s1, const base::State *s2,
@@ -706,6 +718,8 @@ namespace ompl
 
             /** \brief The number of attempts to make at informed sampling */
             unsigned int numSampleAttempts_{100u};
+
+            bool ais_{false};
         };
     }
 }

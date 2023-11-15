@@ -338,7 +338,7 @@ void ompl::base::DubinsMotionValidator::defaultSettings()
 }
 
 bool ompl::base::DubinsMotionValidator::checkMotion(const State *s1, const State *s2,
-                                                    std::pair<State *, double> &lastValid) const
+                                                    std::pair<State *, double> &lastValid, bool s2Valid) const
 {
     /* assume motion starts in a valid configuration so s1 is valid */
 
@@ -367,7 +367,7 @@ bool ompl::base::DubinsMotionValidator::checkMotion(const State *s1, const State
     }
 
     if (result)
-        if (!si_->isValid(s2))
+        if (!s2Valid && !si_->isValid(s2))
         {
             lastValid.second = (double)(nd - 1) / (double)nd;
             if (lastValid.first != nullptr)
@@ -383,10 +383,10 @@ bool ompl::base::DubinsMotionValidator::checkMotion(const State *s1, const State
     return result;
 }
 
-bool ompl::base::DubinsMotionValidator::checkMotion(const State *s1, const State *s2) const
+bool ompl::base::DubinsMotionValidator::checkMotion(const State *s1, const State *s2, bool s2Valid) const
 {
     /* assume motion starts in a valid configuration so s1 is valid */
-    if (!si_->isValid(s2))
+    if (!s2Valid && !si_->isValid(s2))
         return false;
 
     bool result = true, firstTime = true;

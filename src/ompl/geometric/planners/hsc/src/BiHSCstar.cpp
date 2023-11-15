@@ -50,11 +50,8 @@ ompl::geometric::BiHSCstar::BiHSCstar(const base::SpaceInformationPtr &si) : bas
 
     Planner::declareParam<double>("range", this, &BiHSCstar::setRange, &BiHSCstar::getRange, "0.:0.1:10000.");
     Planner::declareParam<double>("pen_distance", this, &BiHSCstar::setPenDistance, &BiHSCstar::getPenDistance, "0.:0.1:10000.");
-    Planner::declareParam<bool>("lazy_path", this, &BiHSCstar::setLazyPath, &BiHSCstar::getLazyPath, "0,1");
     Planner::declareParam<bool>("lazy_node", this, &BiHSCstar::setLazyNode, &BiHSCstar::getLazyNode, "0,1");
     Planner::declareParam<bool>("use_bispace", this, &BiHSCstar::setUseBispace, &BiHSCstar::getUseBispace, "0,1");
-//    Planner::declareParam<bool>("use_biasgrow", this, &BiHSCstar::setUseBiasGrow, &BiHSCstar::getUseBiasGrow, "0,1");
-//    Planner::declareParam<bool>("treated_as_multi_subapce", this, &BiHSCstar::setTreatedAsMultiSubapce, &BiHSCstar::getTreatedAsMultiSubapce, "0,1");
     Planner::declareParam<double>("prune_threshold", this, &BiHSCstar::setPruneThreshold, &BiHSCstar::getPruneThreshold, "0.:.01:1.");
 
     Planner::declareParam<bool>("use_collision_sc", this, &BiHSCstar::setUseCollisionCertificateChecker, &BiHSCstar::getUseCollisionCertificateChecker, "0,1");
@@ -72,42 +69,14 @@ void ompl::geometric::BiHSCstar::setup()
 {
     Planner::setup();
     tools::SelfConfig sc(si_, getName());
-    if (treatedAsMultiSubapce_)
-    {
-        maxDistance_ = penDistance_ = 0.0;
-        sc.configurePlannerRange(maxDistance_);
-        sc.configurePenetrationDistance(penDistance_);
-        auto cs = si_->getStateSpace()->as<base::CompoundStateSpace>();
-        maxDistanceV_.resize(cs->getSubspaceCount());
-        penDistanceV_.resize(cs->getSubspaceCount());
-        double ratio = maxDistance_ / cs->getMaximumExtent();
-        for (std::size_t i = 0; i < maxDistanceV_.size(); i++)
-            maxDistanceV_[i] = ratio * cs->getSubspace(i)->getMaximumExtent();
-        ratio = penDistance_ / cs->getMaximumExtent();
-        for (std::size_t i = 0; i < penDistanceV_.size(); i++)
-            penDistanceV_[i] = ratio * cs->getSubspace(i)->getMaximumExtent();
-    }
-    else 
-    {
-        sc.configurePlannerRange(maxDistance_);
-        sc.configurePenetrationDistance(penDistance_);
-    }
+    sc.configurePlannerRange(maxDistance_);
+    sc.configurePenetrationDistance(penDistance_);
 
     sc.configureProjectionEvaluator(projectionEvaluator_);
     dStart_.setDimension(projectionEvaluator_->getDimension());
     dGoal_.setDimension(projectionEvaluator_->getDimension());
-    dStart_.useNeighbor(false);
-    dGoal_.useNeighbor(false);
     dStart_.setNeighborCell(2);
     dGoal_.setNeighborCell(2);
-
-    /*
-    if (useBiasGrow_)
-    {
-        startBiasPdf_.grid.setDimension(projectionEvaluator_->getDimension());
-        goalBiasPdf_.grid.setDimension(projectionEvaluator_->getDimension());
-    }
-    */
 
     if (!tStart_)
         tStart_.reset(tools::SelfConfig::getDefaultNearestNeighbors<Motion *>(this));
@@ -144,10 +113,6 @@ void ompl::geometric::BiHSCstar::setup()
         setup_ = false;
     }
     
-    if (lazyNode_)
-        lazyPath_ = true;
-    if (!lazyPath_)
-      lazyNode_ = false;
     if (useCollisionCertificateChecker_) 
     {
         onn_.reset(new SimpleGridSC());
@@ -251,18 +216,6 @@ void ompl::geometric::BiHSCstar::clear()
     currentStartCost_ = base::Cost(std::numeric_limits<double>::quiet_NaN());
     currentGoalCost_ = base::Cost(std::numeric_limits<double>::quiet_NaN());
 
-    /*
-    if (useBiasGrow_)
-    {
-        startBiasPdf_.grid.clear();
-        startBiasPdf_.size = 0;
-        startBiasPdf_.pdf.clear();
-        goalBiasPdf_.grid.clear();
-        goalBiasPdf_.size = 0;
-        goalBiasPdf_.pdf.clear();
-        startBiasProb_ = goalBiasProb_ = 0.0;
-    }
-    */
     bestStartMotion_ = nullptr;
     bestGoalMotion_ = nullptr;
 
@@ -297,9 +250,6 @@ ompl::base::PlannerStatus ompl::geometric::BiHSCstar::solve(const base::PlannerT
 
     bool startTree = true;
     bool optimal = false;
-
-    unsigned int connect1 = 0;
-    double ratio1 = 0.5, maxratio1 = 0.0, connectTresh1 = 10.0;
 
     while (!ptc)
     {
@@ -342,7 +292,7 @@ ompl::base::PlannerStatus ompl::geometric::BiHSCstar::solve(const base::PlannerT
         }
 
         batchGrow(startTree);
-        bool updatedSolution = findBetterSolution(optimal, ratio1, maxratio1, connect1, connectTresh1);
+        bool updatedSolution = findBetterSolution(optimal);
         if (optimal)
             break;
         if (lazyNode_)
@@ -482,24 +432,6 @@ ompl::base::PlannerStatus ompl::geometric::BiHSCstar::prepareSolve(const base::P
             }
         }
         penDistance_ = std::min(penDistance_, 0.1*dist);
-
-        if (treatedAsMultiSubapce_)
-        {
-            for (std::size_t i = 0; i < si_->getStateSpace()->getSubspaceCount(); i++)
-            {
-                double dist = -1.0;
-                for (auto & sm : startMotions_)
-                {
-                    for (auto & gm : goalMotions_)
-                    {
-                        double d = si_->distance(sm->state, gm->state, i);
-                        if (dist < d)
-                            dist = d;
-                    }
-                }
-                penDistanceV_[i] = std::min(penDistanceV_[i], 0.1*dist);
-            }
-        }
     }
     return base::PlannerStatus::PREPARE_SUCCESS;
 }
@@ -602,29 +534,6 @@ bool ompl::geometric::BiHSCstar::batchGrow(bool &startTree)
             }
         }
 
-        /*
-        if (useBiasGrow_ && !gsc)
-        {
-            tgi.start = !startTree;
-            gsc = biasGrow(tree, tgi, addedMotion);
-            if (gsc)
-            {
-                startMotion = startTree ? addedMotion : tgi.xmotion; 
-                goalMotion = startTree ? tgi.xmotion : addedMotion;
-            }
-            else 
-            {
-                tgi.start = startTree;
-                gsc = biasGrow(otherTree, tgi, addedMotion);
-                if (gsc)
-                {
-                    startMotion = startTree ? tgi.xmotion : addedMotion;
-                    goalMotion = startTree ? addedMotion : tgi.xmotion;
-                }
-            }
-        }
-        */
-
         if (startMotion && goalMotion && pdef_->getGoal()->isStartGoalPairValid(startMotion->root, goalMotion->root))
         {
             nconnect = true;
@@ -640,10 +549,7 @@ bool ompl::geometric::BiHSCstar::batchGrow(bool &startTree)
 
 bool ompl::geometric::BiHSCstar::growTree(TreeGrowingInfo &tgi, Motion *rmotion, bool &otherSide, bool &change)
 {
-    if (treatedAsMultiSubapce_)
-        return growTreeMultiSpace(tgi, rmotion, otherSide, change);
-    else 
-        return growTreeSingleSpace(tgi, rmotion, otherSide, change);
+    return growTreeSingleSpace(tgi, rmotion, otherSide, change);
 }
 
 bool ompl::geometric::BiHSCstar::growTreeSingleSpace(TreeGrowingInfo &tgi, Motion *rmotion, bool &otherSide, bool &change)
@@ -789,15 +695,6 @@ bool ompl::geometric::BiHSCstar::growTreeSingleSpace(TreeGrowingInfo &tgi, Motio
                 }
             }
         }
-        if (!lazyPath_ && !checkInterMotion(nb, motion, tgi.start))
-        {
-            removeFromInvalidNeighbor(motion);
-            removeFromDisc(disc, motion);
-            freeMotion(motion);
-            freeCertificate(sc);
-            reach = false;
-            break;
-        }
 
         if (solved_ && !keepCondition2(motion, bestCost_, tgi.start))
         {
@@ -841,27 +738,11 @@ bool ompl::geometric::BiHSCstar::growTreeSingleSpace(TreeGrowingInfo &tgi, Motio
         {
             otherSide = true;
             motion->middle = true;
-            /*
-            if (useBiasGrow_ && motion->stateValid == Valid)
-            {
-                if (tgi.start)
-                    addPdfMotion(startBiasPdf_, motion, true);
-                else 
-                    addPdfMotion(goalBiasPdf_, motion, false);
-            }
-            */
-        }
-
-        if (!lazyPath_)
-        {
-            motion->valid = ValidP;
-            insertNeighbor(nb, motion);
-            disc.updateNbh(nb->cell, motion->cell);
         }
 
         if (!motion->cell->data->cmotion || opt_->isCostBetterThan(motion->cost, motion->cell->data->cmotion->cost))
             motion->cell->data->cmotion = motion;
-        if (!motion->cell->data->mmotion || !opt_->isCostBetterThan(motion->cost, motion->cell->data->mmotion->cost))
+        if (!motion->cell->data->mmotion || opt_->isCostBetterThan(motion->cell->data->mmotion->cost, motion->cost))
             motion->cell->data->mmotion = motion;
         if (!solved_)
         {
@@ -1084,15 +965,6 @@ bool ompl::geometric::BiHSCstar::growTreeMultiSpace(TreeGrowingInfo &tgi, Motion
                 }
             }
         }
-        if (!lazyPath_ && !checkInterMotion(nb, motion, tgi.start))
-        {
-            removeFromInvalidNeighbor(motion);
-            removeFromDisc(disc, motion);
-            freeMotion(motion);
-            freeCertificate(sc);
-            reach = false;
-            break;
-        }
 
         if (solved_ && !keepCondition2(motion, bestCost_, tgi.start))
         {
@@ -1135,27 +1007,11 @@ bool ompl::geometric::BiHSCstar::growTreeMultiSpace(TreeGrowingInfo &tgi, Motion
         if (otherSide)
         {
             motion->middle = true;
-            /*
-            if (useBiasGrow_ && motion->stateValid == Valid)
-            {
-                if (tgi.start)
-                    addPdfMotion(startBiasPdf_, motion, true);
-                else 
-                    addPdfMotion(goalBiasPdf_, motion, false);
-            }
-            */
-        }
-
-        if (!lazyPath_)
-        {
-            motion->valid = ValidP;
-            insertNeighbor(nb, motion);
-            disc.updateNbh(nb->cell, motion->cell);
         }
 
         if (!motion->cell->data->cmotion || opt_->isCostBetterThan(motion->cost, motion->cell->data->cmotion->cost))
             motion->cell->data->cmotion = motion;
-        if (!motion->cell->data->mmotion || !opt_->isCostBetterThan(motion->cost, motion->cell->data->mmotion->cost))
+        if (!motion->cell->data->mmotion || opt_->isCostBetterThan(motion->cell->data->mmotion->cost, motion->cost))
             motion->cell->data->mmotion = motion;
         if (!solved_)
         {
@@ -1488,8 +1344,6 @@ bool ompl::geometric::BiHSCstar::isPathValid(Motion *motion, Motion *otherMotion
 
 bool ompl::geometric::BiHSCstar::isPathValid(Motion *motion, bool start)
 {
-    if (!lazyPath_)
-        return true;
     bool stop = false;
     if (!isPathValidLazy(motion, start, stop) || stop)
         return false;
@@ -1907,80 +1761,12 @@ void ompl::geometric::BiHSCstar::addToTree(TreeData &tree, Motion *motion)
         addToTree(tree, child);
 }
 
-void ompl::geometric::BiHSCstar::addPdfMotion(MotionPDF &pdf, Motion *motion, bool start)
-{
-    Grid<MotionInfo>::Coord coord(projectionEvaluator_->getDimension());
-    projectionEvaluator_->computeCoordinates(motion->state, coord);
-
-    Grid<MotionInfo>::Cell *cell = pdf.grid.getCell(coord);
-    if (cell)
-        cell->data.push_back(motion);
-    else
-    {
-        cell = pdf.grid.createCell(coord);
-        cell->data.push_back(motion);
-        pdf.grid.add(cell);
-        cell->data.elem_ = pdf.pdf.add(cell, 0.1);
-
-        if (start)
-            startBiasProb_ = 0.1;
-        else 
-            goalBiasProb_ = 0.1;
-    }
-    pdf.size++;
-}
-
-ompl::geometric::BiHSCstar::Motion *ompl::geometric::BiHSCstar::selectPdfMotion(MotionPDF &pdf, GridCell *&cell)
-{
-    cell = pdf.pdf.sample(rng_.uniform01());
-    if (cell && !cell->data.empty())
-    {
-        double w = pdf.pdf.getWeight(cell->data.elem_);
-        if (treatedAsMultiSubapce_)
-            w /= (static_cast<double>(si_->getStateSpace()->getSubspaceCount()) + w);
-        else
-            w /= (1.0 + w);
-        pdf.pdf.update(cell->data.elem_, w);
-        return cell->data[rng_.uniformInt(0, cell->data.size() - 1)];
-    }
-    else 
-        return nullptr;
-}
-
-void ompl::geometric::BiHSCstar::removePdfMotion(MotionPDF &pdf, Motion *motion)
-{
-    Grid<MotionInfo>::Coord coord(projectionEvaluator_->getDimension());
-    projectionEvaluator_->computeCoordinates(motion->state, coord);
-
-    Grid<MotionInfo>::Cell *cell = pdf.grid.getCell(coord);
-    if (cell)
-    {
-        for (std::size_t i = 0; i < cell->data.size(); ++i)
-        {
-            if (cell->data[i] == motion)
-            {
-                std::iter_swap(cell->data.begin() + i, cell->data.end() - 1);
-                cell->data.pop_back();
-                pdf.size--;
-                break;
-            }
-        }
-
-        if (cell->data.empty())
-        {
-            pdf.pdf.remove(cell->data.elem_);
-            pdf.grid.remove(cell);
-            pdf.grid.destroyCell(cell);
-        }
-    }
-}
-
 void ompl::geometric::BiHSCstar::enableMotionInDisc(Motion *motion)
 {
     motion->cell->data->disabled--;
     if (!motion->cell->data->cmotion || opt_->isCostBetterThan(motion->cost, motion->cell->data->cmotion->cost))
         motion->cell->data->cmotion = motion;
-    if (!motion->cell->data->mmotion || !opt_->isCostBetterThan(motion->cost, motion->cell->data->mmotion->cost))
+    if (!motion->cell->data->mmotion || opt_->isCostBetterThan(motion->cell->data->mmotion->cost, motion->cost))
         motion->cell->data->mmotion = motion;
     for (auto & child : motion->children)
         enableMotionInDisc(child);
@@ -2047,7 +1833,7 @@ void ompl::geometric::BiHSCstar::addToDisc(CellDiscretizationData &disc, Motion 
         cell->data->motions.push_back(motion);
     else
     {
-        cell = static_cast<Cell *>(disc.createCell(coord));
+        cell = disc.createCell(coord);
         cell->data = new CellData();
         cell->data->motions.push_back(motion);
         disc.add(cell);
@@ -2390,7 +2176,7 @@ void ompl::geometric::BiHSCstar::getPlannerData(base::PlannerData &data) const
 }
 
 // optimal
-bool ompl::geometric::BiHSCstar::findBetterSolution(bool &optimal, double &ratio1, double &maxratio1, unsigned int &connect1, double &connectTresh1) // todo
+bool ompl::geometric::BiHSCstar::findBetterSolution(bool &optimal) // todo
 {
     bool updatedSolution = false;
     for (auto & pair : connectionPoint_)
@@ -2398,48 +2184,50 @@ bool ompl::geometric::BiHSCstar::findBetterSolution(bool &optimal, double &ratio
         base::Cost temp = opt_->combineCosts(pair.first->cost, pair.second->cost);
         if (opt_->isFinite(temp) && opt_->isCostBetterThan(temp, bestCost_))
         {
-            if (checkPath(temp, bestCost_, ratio1, maxratio1, connect1, connectTresh1))
+            if (isPathValid(pair.first, pair.second))
             {
-                if (isPathValid(pair.first, pair.second))
+                temp = opt_->combineCosts(pair.first->cost, pair.second->cost);
+                if (opt_->isCostBetterThan(temp, bestCost_))
                 {
-                    temp = opt_->combineCosts(pair.first->cost, pair.second->cost);
-                    if (opt_->isCostBetterThan(temp, bestCost_))
+                    bestCost_ = temp;
+
+                    if (solved_)
+                        OMPL_INFORM("%s: Found a better solution with a cost of %.2f in %u iterations (%u "
+                                "vertices in the graph)",
+                                getName().c_str(), bestCost_.value(), iterations_, tStart_->size() + tGoal_->size());
+                    else 
                     {
-                        bestCost_ = temp;
+                        OMPL_INFORM("%s: Found an initial solution with a cost of %.2f in %u iterations (%u "
+                                "vertices in the graph)",
+                                getName().c_str(), bestCost_.value(), iterations_, tStart_->size() + tGoal_->size());
+                        for (auto & motion : startMotions_)
+                            optimalRewireTree(bh_, motion, true);
+                        for (auto & motion : goalMotions_)
+                            optimalRewireTree(bh_, motion, false);
+                        checkedStartPath_.clear();
+                        checkedGoalPath_.clear();
+                    }
 
-                        double ratio = improvementRatio(temp, pair.first->root, pair.second->root);
-                        ratio1 = std::min(ratio, ratio1);
+                    solved_ = true;
+                    updatedSolution = true;
+                    bestStartMotion_ = pair.first;
+                    bestGoalMotion_ = pair.second;
 
-                        if (solved_)
-                            OMPL_INFORM("%s: Found a better solution with a cost of %.2f in %u iterations (%u "
-                                    "vertices in the graph)",
-                                    getName().c_str(), bestCost_.value(), iterations_, tStart_->size() + tGoal_->size());
-                        else 
-                            OMPL_INFORM("%s: Found an initial solution with a cost of %.2f in %u iterations (%u "
-                                    "vertices in the graph)",
-                                    getName().c_str(), bestCost_.value(), iterations_, tStart_->size() + tGoal_->size());
-
-                        solved_ = true;
-                        updatedSolution = true;
-                        bestStartMotion_ = pair.first;
-                        bestGoalMotion_ = pair.second;
-
-                        if (opt_->isSatisfied(bestCost_))
-                        {
-                            optimal = true;
-                            break;
-                        }
+                    if (opt_->isSatisfied(bestCost_))
+                    {
+                        optimal = true;
+                        break;
                     }
                 }
-                rewirePath();
             }
+            //rewirePath();
         }
     }
 
     return updatedSolution;
 }
 
-void ompl::geometric::BiHSCstar::rewirePath()
+void ompl::geometric::BiHSCstar::rewirePath() // todo update cmotion
 {
     {
         bool updated = false;
@@ -2573,43 +2361,6 @@ double ompl::geometric::BiHSCstar::improvementRatio(const base::Cost &temp, cons
     else 
         ratio *= 0.5;
     return ratio;
-}
-
-bool ompl::geometric::BiHSCstar::checkPath(const base::Cost &temp, const base::Cost &best,
-                                           double &ratio1, double &maxratio1, unsigned int &connect1, double &connectTresh1) const
-{
-    if (!solved_)
-        return true;
-    if (!lazyPath_)
-        return true;
-    bool check = false;
-    double ratio = opt_->isFinite(best) ? std::abs((temp.value() - best.value()) / best.value()) : 2.0 * ratio1;
-    if (ratio >= ratio1) 
-    {
-        connect1 = 0;
-        maxratio1 = 0.0;
-        ratio1 = 0.35 * (ratio1 + ratio);
-        check = true;
-    }
-    else if (ratio > maxratio1)
-    {
-        maxratio1 = ratio;
-        connect1++;
-        if ((double)connect1 >= connectTresh1)
-        {
-            connect1 = 0;
-            connectTresh1 *= 0.9;
-            if (maxratio1 > 0.5 * ratio1)
-            {
-                ratio1 = 0.35 * (maxratio1 + ratio1);
-                maxratio1 = 0.0;
-                check = true;
-            }
-            else 
-                ratio1 *= 0.9;
-        }
-    }
-    return check;
 }
 
 void ompl::geometric::BiHSCstar::optimalRewireTree(BinaryHeap<Motion *, MotionCompare> &bh, Motion *m, bool start)
@@ -2982,7 +2733,7 @@ bool ompl::geometric::BiHSCstar::keepCondition(Motion *motion, const base::Cost 
 
     bool keep = !opt_->isCostBetterThan(threshold, solutionHeuristic2(motion, start));
     return keep;
-
+    /*
     if (!useBispace_)
         return keep;
     if (keep)
@@ -3002,139 +2753,8 @@ bool ompl::geometric::BiHSCstar::keepCondition(Motion *motion, const base::Cost 
                 keep = !opt_->isCostBetterThan(bestGoalMotion_->cost, base::Cost(0.75 * bordersolutionHeuristic(motion, start).value()));
         }
     }
-
     return keep;
-}
-
-ompl::base::Cost ompl::geometric::BiHSCstar::bordersolutionHeuristic(Motion *motion, bool start) const
-{
-    base::Cost costToCome = calculateCostToCome(motion, start);
-
-    const base::State *rootSt = bestStartMotion_->root;
-    const base::State *rootG = bestGoalMotion_->root;
-
-    if (!treatedAsMultiSubapce_ || opt_->getDescription() != "Path Length")
-    {
-        double dist1 = si_->distance(rootSt, motion->state);
-        double dist2 = si_->distance(motion->state, rootG);
-
-        if (start != (dist1 <= dist2))
-            return costToCome;
-
-        base::State *test = si_->allocState();
-        base::State *state1 = si_->allocState();
-        base::State *state2 = si_->allocState();
-
-        si_->copyState(state1, motion->state);
-
-        double d = 0.;
-        if (start)
-        {
-            si_->copyState(state2, rootG);
-            si_->getStateSpace()->interpolate(state1, state2, 0.5, test);
-            d = si_->distance(state1, state2);
-        }
-        else 
-        {
-            si_->copyState(state2, rootSt);
-            si_->getStateSpace()->interpolate(state2, state1, 0.5, test);
-            d = si_->distance(state2, state1);
-        }
-
-        while (d > 1.e-6)
-        {
-            dist1 = si_->distance(rootSt, test);
-            dist2 = si_->distance(test, rootG);
-
-            if (start != (dist1 <= dist2))
-                si_->copyState(state2, test);
-            else 
-                si_->copyState(state1, test);
-
-            if (start)
-                si_->getStateSpace()->interpolate(state1, state2, 0.5, test);
-            else 
-                si_->getStateSpace()->interpolate(state2, state1, 0.5, test);
-
-            d *= 0.5;
-        }
-
-        base::Cost costToGo = opt_->infiniteCost();
-        if (start)
-            costToGo = opt_->motionCost(motion->state, test);
-        else 
-            costToGo = opt_->motionCost(test, motion->state);
-
-        si_->freeState(test);
-        si_->freeState(state1);
-        si_->freeState(state2);
-
-        return opt_->combineCosts(costToCome, costToGo);
-    }
-    else 
-    {
-        for (std::size_t i = 0; i < si_->getStateSpace()->getSubspaceCount(); i++)
-        {
-            double dist1 = si_->distance(rootSt, motion->state, i);
-            double dist2 = si_->distance(motion->state, rootG, i);
-
-            if (start != (dist1 <= dist2))
-                return costToCome;
-        }
-
-        base::State *test = si_->allocState();
-        base::State *state1 = si_->allocState();
-        base::State *state2 = si_->allocState();
-        base::Cost costToGo = opt_->identityCost();
-
-        for (std::size_t i = 0; i < si_->getStateSpace()->getSubspaceCount(); i++)
-        {
-            si_->copyState(state1, motion->state, i);
-
-            double d = 0.;
-            if (start)
-            {
-                si_->copyState(state2, rootG, i);
-                si_->getStateSpace()->interpolate(state1, state2, 0.5, test, i);
-                d = si_->distance(state1, state2, i);
-            }
-            else 
-            {
-                si_->copyState(state2, rootSt, i);
-                si_->getStateSpace()->interpolate(state2, state1, 0.5, test, i);
-                d = si_->distance(state2, state1, i);
-            }
-
-            while (d > 1.e-6)
-            {
-                double dist1 = si_->distance(rootSt, test, i);
-                double dist2 = si_->distance(test, rootG, i);
-
-                if (start != (dist1 <= dist2))
-                    si_->copyState(state2, test, i);
-                else 
-                    si_->copyState(state1, test, i);
-
-                if (start)
-                    si_->getStateSpace()->interpolate(state1, state2, 0.5, test, i);
-                else 
-                    si_->getStateSpace()->interpolate(state2, state1, 0.5, test, i);
-
-                d *= 0.5;
-            }
-
-            if (start)
-                costToGo = opt_->combineCosts(costToGo, opt_->motionCost(motion->state, test, i));
-            else 
-                costToGo = opt_->combineCosts(costToGo, opt_->motionCost(test, motion->state, i));
-        }
-
-        si_->freeState(test);
-        si_->freeState(state1);
-        si_->freeState(state2);
-
-        return opt_->combineCosts(costToCome, costToGo);
-    }
+    */
 }
 
 bool ompl::geometric::BiHSCstar::keepCondition2(Motion *motion, const base::Cost &threshold, bool start) const
@@ -3231,15 +2851,6 @@ bool ompl::geometric::BiHSCstar::isValid(Motion *motion, bool start)
         if (isValid(motion->state))
         {
             motion->stateValid = Valid;
-            /*
-            if (useBiasGrow_ && motion->middle)
-            {
-                if (start)
-                    addPdfMotion(startBiasPdf_, motion, true);
-                else 
-                    addPdfMotion(goalBiasPdf_, motion, false);
-            }
-            */
             return true;
         }
         motion->stateValid = InValid;
@@ -3449,7 +3060,7 @@ bool ompl::geometric::BiHSCstar::checkInterMotion1(Motion *smotion, Motion *gmot
         }
         if (!valid)
         {
-            if (addIntermediateState_ && ratio * dist > 0.25 * maxDistance_)
+            if (addIntermediateState_ && ratio > 0.5 && ratio * dist > 0.25 * maxDistance_)
             {
                 ratio -= delta;
                 Motion *last = new Motion(si_);
@@ -3522,7 +3133,7 @@ bool ompl::geometric::BiHSCstar::checkInterMotion2(Motion *smotion, Motion *gmot
         }
         if (!valid)
         {
-            if (addIntermediateState_ && ratio * dist < 0.75 * maxDistance_)
+            if (addIntermediateState_ && ratio < 0.5 && (1.0 - ratio) * dist > 0.25 * maxDistance_)
             {
                 ratio += delta;
                 Motion *last = new Motion(si_);
@@ -3577,7 +3188,7 @@ void ompl::geometric::BiHSCstar::addIntermediateMotion(Motion *pmotion, Motion *
         insertInvalidNeighbor(last, motion);
     if (!last->cell->data->cmotion || opt_->isCostBetterThan(last->cost, last->cell->data->cmotion->cost))
         last->cell->data->cmotion = last;
-    if (!last->cell->data->mmotion || !opt_->isCostBetterThan(last->cost, last->cell->data->mmotion->cost))
+    if (!last->cell->data->mmotion || opt_->isCostBetterThan(last->cell->data->mmotion->cost, last->cost))
         last->cell->data->mmotion = last;
     if (lazyNode_)
     {
@@ -3606,7 +3217,7 @@ void ompl::geometric::BiHSCstar::addIntermediateMotionLazy(Motion *pmotion, bool
         last->cell->data->disabled++;
     if (!last->cell->data->cmotion || opt_->isCostBetterThan(last->cost, last->cell->data->cmotion->cost))
         last->cell->data->cmotion = last;
-    if (!last->cell->data->mmotion || !opt_->isCostBetterThan(last->cost, last->cell->data->mmotion->cost))
+    if (!last->cell->data->mmotion || opt_->isCostBetterThan(last->cell->data->mmotion->cost, last->cost))
         last->cell->data->mmotion = last;
     if (lazyNode_ && pmotion->sce)
     {
@@ -3706,14 +3317,15 @@ bool ompl::geometric::BiHSCstar::backPathRewireMotion(Motion *motion, bool start
     OrderCellsByCost ocbc(opt_);
     CostMotionCompare compareFn(motion, opt_, start);
     CellDiscretizationData &disc = start ? dStart_ : dGoal_;
-    for (auto & cv : motion->cell->nbh)
+    std::size_t cnbh = motion->cell->nbh.size();
+    for (std::size_t cindex = 0; cindex < cnbh; cindex++)
     {
-        std::size_t numc = cv.size(), ic = numc - 1;
+        std::size_t numc = motion->cell->nbh[cindex].size(), ic = numc - 1;
         while (ic < numc)
         {
             if (ic)
-                std::sort(cv.begin(), cv.begin() + ic + 1, ocbc);
-            Cell *c = cv[ic];
+                std::sort(motion->cell->nbh[cindex].begin(), motion->cell->nbh[cindex].begin() + ic + 1, ocbc);
+            Cell *c = motion->cell->nbh[cindex][ic];
             ic--;
             std::size_t num = c->data->motions.size() - c->data->disabled;
             if (!num)
@@ -3747,7 +3359,7 @@ bool ompl::geometric::BiHSCstar::backPathRewireMotion(Motion *motion, bool start
             std::size_t ictemp = ic;
             while (ictemp < numc)
             {
-                ctemp.insert(cv[ictemp]);
+                ctemp.insert(motion->cell->nbh[cindex][ictemp]);
                 ictemp--;
             }
             bool invalid = false;
@@ -3771,6 +3383,7 @@ bool ompl::geometric::BiHSCstar::backPathRewireMotion(Motion *motion, bool start
                     }
                     else
                     {
+                        invalid = true;
                         insertInvalidNeighbor(nb, motion);
                         continue;
                     }
@@ -3784,10 +3397,10 @@ bool ompl::geometric::BiHSCstar::backPathRewireMotion(Motion *motion, bool start
                 break;
             if (invalid && !ctemp.empty())
             {
-                numc = cv.size(), ic = numc - 1;
+                numc = motion->cell->nbh[cindex].size(), ic = numc - 1;
                 while (ic < numc)
                 {
-                    if (ctemp.find(cv[ic]) != ctemp.end())
+                    if (ctemp.find(motion->cell->nbh[cindex][ic]) != ctemp.end())
                         break;
                     ic--;
                 }
@@ -3805,14 +3418,15 @@ bool ompl::geometric::BiHSCstar::backPathRewireMotionLazy(Motion *motion, bool s
     bool valid = false;
     OrderCellsByCost ocbc(opt_);
     CostMotionCompare compareFn(motion, opt_, start);
-    for (auto & cv : motion->cell->nbh)
+    std::size_t cnbh = motion->cell->nbh.size();
+    for (std::size_t cindex = 0; cindex < cnbh; cindex++)
     {
-        std::size_t numc = cv.size(), ic = numc - 1;
+        std::size_t numc = motion->cell->nbh[cindex].size(), ic = numc - 1;
         while (ic < numc)
         {
             if (ic)
-                std::sort(cv.begin(), cv.begin() + ic + 1, ocbc);
-            Cell *c = cv[ic];
+                std::sort(motion->cell->nbh[cindex].begin(), motion->cell->nbh[cindex].begin() + ic + 1, ocbc);
+            Cell *c = motion->cell->nbh[cindex][ic];
             ic--;
             std::size_t num = c->data->motions.size() - c->data->disabled;
             if (!num)
@@ -3846,7 +3460,7 @@ bool ompl::geometric::BiHSCstar::backPathRewireMotionLazy(Motion *motion, bool s
             std::size_t ictemp = ic;
             while (ictemp < numc)
             {
-                ctemp.insert(cv[ictemp]);
+                ctemp.insert(motion->cell->nbh[cindex][ictemp]);
                 ictemp--;
             }
             bool invalid = false;
@@ -3865,6 +3479,7 @@ bool ompl::geometric::BiHSCstar::backPathRewireMotionLazy(Motion *motion, bool s
                 {
                     if (!checkInterMotionLazy(nb, motion, start))
                     {
+                        invalid = true;
                         insertInvalidNeighbor(nb, motion);
                         continue;
                     }
@@ -3879,10 +3494,10 @@ bool ompl::geometric::BiHSCstar::backPathRewireMotionLazy(Motion *motion, bool s
                 break;
             if (invalid && !ctemp.empty())
             {
-                numc = cv.size(), ic = numc - 1;
+                numc = motion->cell->nbh[cindex].size(), ic = numc - 1;
                 while (ic < numc)
                 {
-                    if (ctemp.find(cv[ic]) != ctemp.end())
+                    if (ctemp.find(motion->cell->nbh[cindex][ic]) != ctemp.end())
                         break;
                     ic--;
                 }

@@ -46,7 +46,7 @@ void ompl::base::DiscreteMotionValidator::defaultSettings()
 }
 
 bool ompl::base::DiscreteMotionValidator::checkMotion(const State *s1, const State *s2,
-                                                      std::pair<State *, double> &lastValid) const
+                                                      std::pair<State *, double> &lastValid, bool s2Valid) const
 {
     /* assume motion starts in a valid configuration so s1 is valid */
 
@@ -74,7 +74,7 @@ bool ompl::base::DiscreteMotionValidator::checkMotion(const State *s1, const Sta
     }
 
     if (result)
-        if (!si_->isValid(s2))
+        if (!s2Valid && !si_->isValid(s2))
         {
             lastValid.second = (double)(nd - 1) / (double)nd;
             if (lastValid.first != nullptr)
@@ -90,10 +90,10 @@ bool ompl::base::DiscreteMotionValidator::checkMotion(const State *s1, const Sta
     return result;
 }
 
-bool ompl::base::DiscreteMotionValidator::checkMotion(const State *s1, const State *s2) const
+bool ompl::base::DiscreteMotionValidator::checkMotion(const State *s1, const State *s2, bool s2Valid) const
 {
     /* assume motion starts in a valid configuration so s1 is valid */
-    if (!si_->isValid(s2))
+    if (!s2Valid && !si_->isValid(s2))
     {
         invalid_++;
         return false;

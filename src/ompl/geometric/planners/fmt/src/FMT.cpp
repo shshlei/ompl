@@ -486,7 +486,7 @@ ompl::base::PlannerStatus ompl::geometric::FMT::solve(const base::PlannerTermina
         lastGoalMotion_ = z;
         traceSolutionPathThroughTree(lastGoalMotion_);
 
-        OMPL_DEBUG("Final path cost: %f", lastGoalMotion_->getCost().value());
+        OMPL_INFORM("Final path cost: %f", lastGoalMotion_->getCost().value());
 
         return base::PlannerStatus(true, false);
     }  // if plannerSuccess

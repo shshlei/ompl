@@ -1,0 +1,2673 @@
+/*********************************************************************
+* Software License Agreement (BSD License)
+*
+*  Copyright (c) 2011, Rice University
+*  All rights reserved.
+*
+*  Redistribution and use in source and binary forms, with or without
+*  modification, are permitted provided that the following conditions
+*  are met:
+*
+*   * Redistributions of source code must retain the above copyright
+*     notice, this list of conditions and the following disclaimer.
+*   * Redistributions in binary form must reproduce the above
+*     copyright notice, this list of conditions and the following
+*     disclaimer in the documentation and/or other materials provided
+*     with the distribution.
+*   * Neither the name of the Rice University nor the names of its
+*     contributors may be used to endorse or promote products derived
+*     from this software without specific prior written permission.
+*
+*  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+*  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+*  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+*  FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+*  COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+*  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+*  BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+*  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+*  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+*  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+*  ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+*  POSSIBILITY OF SUCH DAMAGE.
+*********************************************************************/
+
+/* Authors: Shi Shenglei */
+
+#include "ompl/geometric/planners/rrt/RRTBispace.h"
+#include "ompl/base/goals/GoalSampleableRegion.h"
+#include "ompl/base/objectives/PathLengthOptimizationObjective.h"
+#include "ompl/tools/config/SelfConfig.h"
+
+ompl::geometric::RRTBispace::RRTBispace(const base::SpaceInformationPtr &si) : base::Planner(si, "RRTBispace"),
+    mc_(opt_), bh_(mc_)
+{
+    specs_.recognizedGoal = base::GOAL_SAMPLEABLE_REGION;
+    specs_.directed = true;
+    specs_.approximateSolutions = false;
+
+    Planner::declareParam<double>("range", this, &RRTBispace::setRange, &RRTBispace::getRange, "0.:0.1:10000.");
+    Planner::declareParam<double>("pen_distance", this, &RRTBispace::setPenDistance, &RRTBispace::getPenDistance, "0.:0.1:10000.");
+    Planner::declareParam<double>("max_invalid_node_ratio", this, &RRTBispace::setMaxInvalidNodeRatio, &RRTBispace::getMaxInvalidNodeRatio, "0.:0.05:1.");
+    Planner::declareParam<bool>("lazy_path", this, &RRTBispace::setLazyPath, &RRTBispace::getLazyPath, "0,1");
+    Planner::declareParam<bool>("lazy_node", this, &RRTBispace::setLazyNode, &RRTBispace::getLazyNode, "0,1");
+    Planner::declareParam<bool>("treated_as_multi_subapce", this, &RRTBispace::setTreatedAsMultiSubapce, &RRTBispace::getTreatedAsMultiSubapce, "0,1");
+    Planner::declareParam<unsigned int>("neighbor_number", this, &RRTBispace::setNeighborNum, &RRTBispace::getNeighborNum, "1:1:100000");
+    Planner::declareParam<unsigned int>("batch_size", this, &RRTBispace::setBatchSize, &RRTBispace::getBatchSize, "1:1:100000");
+}
+
+ompl::geometric::RRTBispace::~RRTBispace()
+{
+    freeMemory();
+}
+
+void ompl::geometric::RRTBispace::setup()
+{
+    Planner::setup();
+    tools::SelfConfig sc(si_, getName());
+    sc.configurePlannerRange(maxDistance_);
+    sc.configurePlannerCollisionRange(maxCollisionDistance_);
+    sc.configurePenetrationDistance(penDistance_);
+    if (treatedAsMultiSubapce_)
+    {
+        maxDistance_ /= si_->getStateSpace()->getSubspaceCount();
+        maxCollisionDistance_ /= si_->getStateSpace()->getSubspaceCount();
+        penDistance_ /= si_->getStateSpace()->getSubspaceCount();
+    }
+    sc.configureProjectionEvaluator(projectionEvaluator_);
+
+    startBiasPdf_.grid.setDimension(projectionEvaluator_->getDimension());
+    goalBiasPdf_.grid.setDimension(projectionEvaluator_->getDimension());
+
+    symmetric_ = si_->getStateSpace()->hasSymmetricDistance() && si_->getStateSpace()->hasSymmetricInterpolate();
+
+    if (!tStart_)
+        tStart_.reset(tools::SelfConfig::getDefaultNearestNeighbors<Motion *>(this));
+
+    if (!tGoal_)
+        tGoal_.reset(tools::SelfConfig::getDefaultNearestNeighbors<Motion *>(this));
+
+    tStart_->setDistanceFunction([this](const Motion *a, const Motion *b)
+                                 {
+                                    return distanceFunction(a, b); 
+                                 });
+    tGoal_->setDistanceFunction([this](const Motion *a, const Motion *b)
+                                {
+                                    return distanceFunction(a, b); 
+                                });
+
+    if (!tStart_->reportsSortedResults() || !tGoal_->reportsSortedResults())
+    {
+        OMPL_WARN("%s: NearestNeighbors datastructure does not return sorted solutions.", getName().c_str());
+        sortedK_ = false;
+    }
+
+    if (pdef_)
+    {
+        if (pdef_->hasOptimizationObjective())
+            opt_ = pdef_->getOptimizationObjective();
+        else
+        {
+            OMPL_INFORM("%s: No optimization objective specified. Defaulting to optimizing path length for the allowed planning time.", getName().c_str());
+            opt_ = std::make_shared<base::PathLengthOptimizationObjective>(si_);
+
+            pdef_->setOptimizationObjective(opt_);
+        }
+
+        bestCost_ = opt_->infiniteCost();
+
+        mc_ = MotionCompare(opt_);
+        bh_ = BinaryHeap<Motion *, MotionCompare>(mc_);
+    }
+    else
+    {
+        OMPL_INFORM("%s: problem definition is not set, deferring setup completion...", getName().c_str());
+        setup_ = false;
+    }
+    
+    if (lazyNode_)
+        lazyPath_ = true;
+}
+
+void ompl::geometric::RRTBispace::freeMemory()
+{
+    std::vector<Motion *> motions;
+
+    if (tStart_)
+    {
+        tStart_->list(motions);
+        for (auto & motion : motions)
+        {
+            if (motion->state != nullptr)
+                si_->freeState(motion->state);
+            delete motion;
+        }
+        motions.clear();
+    }
+
+    if (tGoal_)
+    {
+        tGoal_->list(motions);
+        for (auto & motion : motions)
+        {
+            if (motion->state != nullptr)
+                si_->freeState(motion->state);
+            delete motion;
+        }
+        motions.clear();
+    }
+
+    for (auto & state : startBiasStates_)
+        si_->freeState(state);
+    for (auto & state : goalBiasStates_)
+         si_->freeState(state);
+}
+
+void ompl::geometric::RRTBispace::clear()
+{
+    setup_ = false;
+
+    Planner::clear();
+    sampler_.reset();
+
+    freeMemory();
+
+    guniform_ = true;
+
+    if (tStart_)
+    {
+        tStart_->clear();
+    }
+
+    if (tGoal_)
+    {
+        tGoal_->clear();
+    }
+
+    tree_ = -1;
+
+    startMotions_.clear();
+    goalMotions_.clear();
+
+    pnullStartMotions_.clear();
+    pnullGoalMotions_.clear();
+
+    checkedStartPath_.clear();
+    checkedGoalPath_.clear();
+
+    localK_ = 5;
+
+    connectionPoint_.clear();
+
+    startBiasPdf_.grid.clear();
+    startBiasPdf_.size = 0;
+    startBiasPdf_.pdf.clear();
+
+    goalBiasPdf_.grid.clear();
+    goalBiasPdf_.size = 0;
+    goalBiasPdf_.pdf.clear();
+
+    startBiasProb_ = goalBiasProb_ = 0.0;
+
+    invalidStartNum_ = invalidGoalNum_ = 0;
+
+    bestStartMotion_ = nullptr;
+    bestGoalMotion_ = nullptr;
+
+    bestCost_ = base::Cost(std::numeric_limits<double>::quiet_NaN());
+
+    solved_ = false;
+    notReversePathCheck_ = 0;
+    checkStateIteration_ = 0;
+    startBiasStates_.clear();
+    goalBiasStates_.clear();
+}
+
+ompl::base::PlannerStatus ompl::geometric::RRTBispace::solve(const base::PlannerTerminationCondition &ptc)
+{
+    base::PlannerStatus ps= prepareSolve(ptc);
+    if (ps != base::PlannerStatus::PREPARE_SUCCESS)
+        return ps;
+
+    sampler_ = si_->allocStateSampler();
+
+    OMPL_INFORM("%s: Starting planning with %u states already in datastructure.", getName().c_str(), (tStart_->size() + tGoal_->size()));
+
+    bool startTree = true;
+    while (!ptc)
+    {
+        if (pis_.getSampledGoalsCount() < tGoal_->size() / 2)
+        {
+            const base::State *st = pis_.nextGoal();
+            if (st != nullptr)
+            {
+                auto *motion = new Motion(si_);
+                si_->copyState(motion->state, st);
+                motion->valid = true;
+                motion->stateValid = Valid;
+                motion->root = motion->state;
+                motion->cost = opt_->identityCost();
+                tGoal_->add(motion);
+                goalMotions_.push_back(motion);
+            }
+        }
+
+        if (lazyNode_)
+            removeInvalidMotions(maxInvalidNodeRatio_);
+
+        batchGrow(startTree);
+
+        for (auto & pair : connectionPoint_)
+        {
+            if (opt_->isFinite(pair.first->cost) && opt_->isFinite(pair.second->cost))
+            {
+                if (isPathValid(pair.first, pair.second))
+                {
+                    bestStartMotion_ = pair.first;
+                    bestGoalMotion_ = pair.second;
+
+                    solved_ = true;
+                    break;
+                }
+            }
+        }
+
+        if (solved_)
+        {
+            bestCost_ = opt_->combineCosts(bestStartMotion_->cost, bestGoalMotion_->cost);
+            break;
+        }
+    }
+
+    if (solved_)
+    {
+        ptc.terminate();
+        processSolution(bestStartMotion_, bestGoalMotion_);
+    }
+
+    OMPL_INFORM("%s: Created %u states (%u start + %u goal).", getName().c_str(), tStart_->size() + tGoal_->size(),
+                tStart_->size(), tGoal_->size());
+
+    OMPL_INFORM("%s: Start bias states %d, goal bias states %d", getName().c_str(), startBiasStates_.size(), goalBiasStates_.size());
+
+    OMPL_INFORM("%s: Start bias pdf %d, goal bias pdf %d", getName().c_str(), startBiasPdf_.size, goalBiasPdf_.size);
+
+    return solved_ ? base::PlannerStatus::EXACT_SOLUTION : base::PlannerStatus::TIMEOUT;
+}
+
+ompl::base::PlannerStatus ompl::geometric::RRTBispace::prepareSolve(const base::PlannerTerminationCondition &ptc)
+{
+    checkValidity();
+
+    auto *goal = dynamic_cast<base::GoalSampleableRegion *>(pdef_->getGoal().get());
+
+    if (goal == nullptr)
+    {
+        OMPL_ERROR("%s: Unknown type of goal", getName().c_str());
+        return base::PlannerStatus::UNRECOGNIZED_GOAL_TYPE;
+    }
+    else if (!goal->couldSample())
+    {
+        OMPL_ERROR("%s: Insufficient states in sampleable goal region", getName().c_str());
+        return base::PlannerStatus::INVALID_GOAL;
+    }
+
+    if (pis_.haveMoreStartStates())
+    {
+        while (const base::State *st = pis_.nextStart())
+        {
+            auto *motion = new Motion(si_);
+            si_->copyState(motion->state, st);
+            motion->valid = true;
+            motion->stateValid = Valid;
+            motion->root = motion->state;
+            motion->cost = opt_->identityCost();
+            tStart_->add(motion);
+            startMotions_.push_back(motion);
+        }
+    }
+
+    if (tStart_->size() == 0)
+    {
+        OMPL_ERROR("%s: There are no valid initial states!", getName().c_str());
+        return base::PlannerStatus::INVALID_START;
+    }
+
+    if (const base::State *st = pis_.nextGoal(ptc))
+    {
+        auto *motion = new Motion(si_);
+        si_->copyState(motion->state, st);
+        motion->valid = true;
+        motion->stateValid = Valid;
+        motion->root = motion->state;
+        motion->cost = opt_->identityCost();
+        tGoal_->add(motion);
+        goalMotions_.push_back(motion);
+    }
+
+    if (tGoal_->size() == 0)
+    {
+        OMPL_ERROR("%s: Unable to sample any valid states for goal tree", getName().c_str());
+        return base::PlannerStatus::INVALID_GOAL;
+    }
+
+    double dist = -1.0;
+    for (auto & sm : startMotions_)
+    {
+        for (auto & gm : goalMotions_)
+        {
+            double d = si_->distance(sm->state, gm->state);
+            if (dist < d)
+            {
+                dist = d;
+            }
+        }
+    }
+
+    penDistance_ = std::max(penDistance_, 0.1*dist);
+
+    return base::PlannerStatus::PREPARE_SUCCESS;
+}
+
+void ompl::geometric::RRTBispace::processSolution(const Motion *bestStartMotion, const Motion *bestGoalMotion)
+{
+    std::vector<const base::State *> spath;
+
+    bool del = false;
+    const Motion *solution = bestStartMotion;
+    if (solution->parent != nullptr)
+    {
+        del = true;
+        solution = solution->parent;
+    }
+    std::vector<const base::State *> mpath1;
+    while (solution != nullptr)
+    {
+        mpath1.push_back(solution->state);
+        solution = solution->parent;
+    }
+
+    for (std::size_t i = mpath1.size() - 1; i < mpath1.size(); i--)
+        spath.push_back(mpath1[i]);
+
+    solution = bestGoalMotion;
+    if (!del)
+        solution = solution->parent;
+    while (solution != nullptr)
+    {
+        spath.push_back(solution->state);
+        solution = solution->parent;
+    }
+
+    auto path(std::make_shared<PathGeometric>(si_));
+    path->getStates().reserve(spath.size());
+    for (auto & i : spath)
+        path->append(i);
+
+    // Add the solution path.
+    base::PlannerSolution psol(path);
+    psol.setPlannerName(getName());
+
+    // Does the solution satisfy the optimization objective?
+    psol.setOptimized(opt_, bestCost_, opt_->isSatisfied(bestCost_));
+    pdef_->addSolutionPath(psol);
+}
+
+bool ompl::geometric::RRTBispace::batchGrow(bool &startTree, bool optimal)
+{
+    bool nconnect = false;
+
+    TreeGrowingInfo tgi;
+    tgi.xstate = si_->allocState();
+
+    Motion *rmotion = new Motion(si_);
+    base::State *rstate = rmotion->state;
+
+    for (unsigned int i = 0; i < batch_; i++)
+    {
+        if (tree_ == 0) // todo bias size
+            startTree = true;
+        else if (tree_ == 1)
+            startTree = false;
+
+        TreeData &tree = startTree ? tStart_ : tGoal_;
+        tgi.start = startTree;
+        startTree = !startTree;
+        TreeData &otherTree = startTree ? tStart_ : tGoal_;
+
+        if (!sampleUniform(rstate, tgi.start)) 
+            continue;
+
+        bool otherSide = false;
+        bool checkConnection = false;
+        GrowState gs = growTree(tree, tgi, rmotion, checkConnection, otherSide, optimal);
+
+        Motion *addedMotion = tgi.xmotion;
+
+        if (gs != REACHED)
+            si_->copyState(rstate, addedMotion->state);
+
+        tgi.start = startTree;
+        checkConnection = true;
+        GrowState gsc = growTree(otherTree, tgi, rmotion, checkConnection, otherSide, optimal);
+
+        Motion *startMotion = nullptr, *goalMotion = nullptr;
+
+        if (gsc == REACHED)
+        {
+            startMotion = startTree ? tgi.xmotion : addedMotion;
+            goalMotion = startTree ? addedMotion : tgi.xmotion;
+        }
+        else if (otherSide && checkConnection) 
+        {
+            addedMotion = tgi.xmotion;
+
+            si_->copyState(rstate, addedMotion->state);
+
+            tgi.start = !startTree;
+            gsc = growTree(tree, tgi, rmotion, checkConnection, otherSide, optimal);
+
+            if (gsc == REACHED)
+            {
+                startMotion = startTree ? addedMotion : tgi.xmotion;
+                goalMotion = startTree ? tgi.xmotion : addedMotion;
+            }
+        }
+
+        if (gsc != REACHED)
+        {
+            tgi.start = !startTree;
+            gsc = biasGrow(tree, tgi, addedMotion, optimal);
+
+            if (gsc == REACHED)
+            {
+                startMotion = startTree ? addedMotion : tgi.xmotion; 
+                goalMotion = startTree ? tgi.xmotion : addedMotion;
+            }
+            else 
+            {
+                tgi.start = startTree;
+                gsc = biasGrow(otherTree, tgi, addedMotion, optimal);
+
+                if (gsc == REACHED)
+                {
+                    startMotion = startTree ? tgi.xmotion : addedMotion;
+                    goalMotion = startTree ? addedMotion : tgi.xmotion;
+                }
+            }
+        }
+
+        if (gsc == REACHED && pdef_->getGoal()->isStartGoalPairValid(startMotion->root, goalMotion->root))
+        {
+            nconnect = true;
+            startMotion->inConnection = true;
+            goalMotion->inConnection = true;
+            connectionPoint_.emplace_back(startMotion, goalMotion);
+        }
+    }
+
+    si_->freeState(tgi.xstate);
+    si_->freeState(rstate);
+    delete rmotion;
+
+    return nconnect;
+}
+
+// feasible
+ompl::geometric::RRTBispace::GrowState ompl::geometric::RRTBispace::growTree(TreeData &tree, TreeGrowingInfo &tgi, Motion *rmotion,
+                                                                   bool &checkConnection, bool &otherSide, bool optimal)
+{
+    otherSide = false;
+
+    Motion *connect = nullptr;
+    if (checkConnection)
+        connect = tgi.xmotion;
+
+    bool null = false;
+    Motion *nmotion = selectNMotion(tree, tgi.start, rmotion, null);
+
+    tgi.xmotion = nmotion;
+
+    if (si_->equalStates(nmotion->state, rmotion->state))
+        return TRAPPED;
+    if (nmotion->stateValid == InValid)
+    {
+        checkConnection = false;
+        return TRAPPED;
+    }
+
+    std::vector<bool> currentTreeV;
+    std::vector<bool> addpdv;
+    std::vector<double> pdv;
+    std::vector<bool> pstop;
+    std::vector<bool> reachv;
+    bool currentTree = true;
+    bool addpd = false;
+    double pd = 0.0;
+    if (treatedAsMultiSubapce_)
+    {
+        currentTreeV.resize(si_->getStateSpace()->getSubspaceCount());
+        for (std::size_t i = 0; i < currentTreeV.size(); i++)
+            currentTreeV[i] = (tgi.start == growCurrentTree(rmotion->state, i));
+        currentTree = std::accumulate(currentTreeV.begin(), currentTreeV.end(), true, [](bool a, bool b){return a&&b;});
+
+        if (!currentTree)
+        {
+            addpdv.resize(currentTreeV.size());
+            std::fill(addpdv.begin(), addpdv.end(), false);
+            pdv.resize(currentTreeV.size());
+            std::fill(pdv.begin(), pdv.end(), 0.0);
+            pstop.resize(currentTreeV.size());
+            std::fill(pstop.begin(), pstop.end(), false);
+            reachv.resize(currentTreeV.size());
+            std::fill(reachv.begin(), reachv.end(), false);
+        }
+    }
+    else
+        currentTree = (tgi.start == growCurrentTree(rmotion->state));
+
+    Motion *motion = nullptr;
+
+    bool reach = false;
+
+    unsigned int iter = 0;
+
+    std::vector<Motion*> added;
+
+    while (!reach)
+    {
+        iter++;
+        checkStateIteration_++;
+        checkStateIteration_ %= 10;
+        nmotion = tgi.xmotion;
+        base::State *dstate = rmotion->state;
+        if (treatedAsMultiSubapce_ && !currentTree)
+        {
+            si_->copyState(tgi.xstate, rmotion->state);
+            dstate = tgi.xstate;
+            bool stop = false;
+            for (std::size_t i = 0; i < currentTreeV.size(); i++)
+            {
+                if (!pstop[i])
+                {
+                    double d = tgi.start ? si_->distance(nmotion->state, rmotion->state, i) : si_->distance(rmotion->state, nmotion->state, i);
+                    double maxDistance = optimal ? maxCollisionDistance_ : maxDistance_;
+                    if (d > maxDistance)
+                    {
+                        if (tgi.start)
+                            si_->getStateSpace()->interpolate(nmotion->state, rmotion->state, std::min(maxDistance / d, 0.5), tgi.xstate, i);
+                        else 
+                            si_->getStateSpace()->interpolate(rmotion->state, nmotion->state, std::max(1.0 - maxDistance / d, 0.5), tgi.xstate, i);
+
+                        if (si_->equalStates(nmotion->state, tgi.xstate) || si_->equalStates(rmotion->state, tgi.xstate))
+                        {
+                            stop = true;
+                            break;
+                        }
+                    }
+                    else 
+                        reachv[i] = true;
+                }
+                else 
+                    si_->copyState(dstate, nmotion->state, i);
+            }
+            if (stop)
+                break;
+            reach = std::accumulate(reachv.begin(), reachv.end(), true, [](bool a, bool b){return a&&b;});
+        }
+        else 
+        {
+            double d = tgi.start ? si_->distance(nmotion->state, rmotion->state) : si_->distance(rmotion->state, nmotion->state);
+            double maxDistance = optimal ? maxCollisionDistance_ : maxDistance_;
+            if (treatedAsMultiSubapce_)
+                maxDistance *= si_->getStateSpace()->getSubspaceCount();
+            if (d > maxDistance)
+            {
+                if (tgi.start)
+                    si_->getStateSpace()->interpolate(nmotion->state, rmotion->state, std::min(maxDistance / d, 0.5), tgi.xstate);
+                else 
+                    si_->getStateSpace()->interpolate(rmotion->state, nmotion->state, std::max(1.0 - maxDistance / d, 0.5), tgi.xstate);
+
+                if (si_->equalStates(nmotion->state, tgi.xstate) || si_->equalStates(rmotion->state, tgi.xstate))
+                    break;
+
+                dstate = tgi.xstate;
+            }
+            else 
+                reach = true;
+        }
+
+        if (checkConnection && reach && connect->inConnection)
+        {
+            checkConnection = false;
+            reach = false;
+            break;
+        }
+
+        if (lazyNode_ && checkConnection && reach && !isValid(connect, !tgi.start))
+        {
+            checkConnection = false;
+            reach = false;
+            break;
+        }
+
+        if (treatedAsMultiSubapce_ && !currentTree)
+        {
+            bool stop = false;
+            for (std::size_t i = 0; i < currentTreeV.size(); i++)
+            {
+                if (!pstop[i])
+                {
+                    if (addpdv[i] || (!currentTreeV[i] && tgi.start != growCurrentTree(dstate, i)))
+                    {
+                        if (addpdv[i])
+                        {
+                            pdv[i] += tgi.start ? si_->distance(nmotion->state, dstate, i) : si_->distance(dstate, nmotion->state, i);
+                        }
+                        else 
+                        {
+                            Motion *last = nmotion;
+                            while (last != nullptr && tgi.start != growCurrentTree(last->state, i))
+                            {
+                                last = last->parent;
+                            }
+
+                            if (last != nullptr)
+                                pdv[i] += penetrationDistance(last->state, dstate, tgi.start, i);
+                            else 
+                            {
+                                otherSide = true;
+                                stop = true;
+                                reach = false;
+                                break;
+                            }
+
+                            addpdv[i] = true;
+                            addpd = true;
+                        }
+                        if (pdv[i] > 1.1*penDistance_)
+                            stop = true;
+                        else if (pdv[i] > penDistance_)
+                        {
+                            pstop[i] = true;
+                        }
+                    }
+                }
+            }
+
+            if (stop || std::accumulate(pstop.begin(), pstop.end(), true, [](bool a, bool b){return a&&b;}))
+            {
+                reach = false;
+                break;
+            }
+        }
+        else if (addpd || (!currentTree && tgi.start != growCurrentTree(dstate))) 
+        {
+            if (addpd)
+            {
+                pd += tgi.start ? si_->distance(nmotion->state, dstate) : si_->distance(dstate, nmotion->state);
+            }
+            else 
+            {
+                Motion *last = nmotion;
+                while (last != nullptr && tgi.start != growCurrentTree(last->state))
+                {
+                    last = last->parent;
+                }
+
+                if (last != nullptr)
+                    pd += penetrationDistance(last->state, dstate, tgi.start);
+                else 
+                {
+                    otherSide = true;
+                    reach = false;
+                    break;
+                }
+
+                addpd = true;
+            }
+
+            if (pd > penDistance_)
+            {
+                reach = false;
+                break;
+            }
+        }
+
+        if (!lazyNode_ || checkStateIteration_ == 1 || checkStateIteration_ == 5 || checkStateIteration_ == 9) // todo check state validity for some motions
+        {
+            if (!isValid(dstate))
+            {
+                reach = false;
+                break;
+            }
+        }
+
+        motion = new Motion(si_);
+        si_->copyState(motion->state, dstate);
+        if (!lazyNode_ || (checkConnection && reach))
+            motion->stateValid = Valid;
+
+        if (lazyPath_ || lazyNode_ || optimal)
+        {
+            getNeighbors(tree, motion, tgi.start);
+
+            unsigned int ind = 0;
+            bool nbnm = checkIfIn(motion->nbh, nmotion, ind);
+            if (!nbnm)
+                insertNeighbor(motion, nmotion);
+            else if (!added.empty() && !optimal)
+            {
+                auto it = added.rbegin();
+                while (nbnm && it != added.rend())
+                {
+                    nbnm = checkIfIn(motion->nbh, *it, ind);
+                    if (nbnm)
+                        motion->nbh.erase(motion->nbh.begin() + ind);
+                    it++;
+                }
+            }
+
+            if (lazyNode_)
+            {
+                for (auto it = motion->nbh.begin(); it != motion->nbh.end();)
+                {
+                    if (it->first->stateValid == InValid)
+                        it = motion->nbh.erase(it);
+                    else 
+                        it++;
+                }
+            }
+        }
+
+        Motion *nb = nullptr;
+        if (optimal)
+        {
+            CostMotionCompare compareFn(motion, opt_, tgi.start);
+            nb = std::min_element(motion->nbh.begin(), motion->nbh.end(), compareFn)->first;
+        }
+        else 
+            nb = nmotion;
+
+        if (!lazyPath_)
+        {
+            if (tgi.start ? !checkInterMotion(nb, motion) : !checkInterMotion(motion, nb))
+            {
+                si_->freeState(motion->state);
+                delete motion;
+                reach = false;
+                break;
+            }
+        }
+
+        connectToPmotion(motion, nb, tgi.start);
+
+        if (solved_ && guniform_ && !keepCondition2(motion, bestCost_, tgi.start))
+        {
+            si_->freeState(motion->state);
+            delete motion;
+            reach = false;
+            break;
+        }
+
+        if (addpd)
+        {
+            otherSide = true;
+            motion->middle = true;
+            if (motion->stateValid == Valid)
+            {
+                if (tgi.start)
+                    addPdfMotion(startBiasPdf_, motion, true);
+                else 
+                    addPdfMotion(goalBiasPdf_, motion, false);
+
+                ompl::base::State *biasstate = si_->allocState();
+                si_->copyState(biasstate, motion->state);
+                if (tgi.start)
+                    startBiasStates_.push_back(biasstate);
+                else
+                    goalBiasStates_.push_back(biasstate);
+            }
+        }
+
+        added.push_back(nmotion);
+
+        for (auto it = motion->nbh.begin(); it != motion->nbh.end(); ++it)
+            insertNeighbor(it->first, motion);
+
+        motion->parent->children.push_back(motion);
+        tree->add(motion);
+        tgi.xmotion = motion;
+
+        if (!lazyPath_)
+        {
+            motion->valid = true;
+            if (optimal)
+                setMotionValid(nb, motion);
+        }
+
+        if ((lazyPath_ || lazyNode_ || optimal) && opt_->isFinite(motion->cost))
+        {
+            Motion *last = motion->parent;
+            bool update = false;
+            if (!rewireTree(bh_, motion, tgi.start, update))
+            {
+                iter--;
+                tgi.xmotion = last;
+                reach = false;
+                break;
+            }
+
+            if (null && update)
+            {
+                nmotion = selectNMotion(tree, tgi.start, rmotion, null);
+                tgi.xmotion = nmotion;
+
+                if (si_->equalStates(nmotion->state, rmotion->state))
+                {
+                    reach = false;
+                    break;
+                }
+                if (nmotion->stateValid == InValid)
+                {
+                    checkConnection = false;
+                    reach = false;
+                    break;
+                }
+                
+                added.clear();
+                addpd = false;
+                pd = 0.0;
+                if (treatedAsMultiSubapce_ && !currentTree)
+                {
+                    std::fill(addpdv.begin(), addpdv.end(), false);
+                    std::fill(pdv.begin(), pdv.end(), 0.0);
+                    std::fill(pstop.begin(), pstop.end(), false);
+                    std::fill(reachv.begin(), reachv.end(), false);
+                }
+            }
+        }
+
+        if (treatedAsMultiSubapce_ && !currentTree)
+        {
+            bool stop = true;
+            for (std::size_t i = 0; i < currentTreeV.size(); i++)
+            {
+                if (!(pstop[i] || reachv[i]))
+                {
+                    stop = false;
+                    break;
+                }
+            }
+            if (stop)
+                break;
+        }
+    }
+
+    return reach ? REACHED : (iter <= 1 ? TRAPPED : ADVANCED);
+}
+
+ompl::geometric::RRTBispace::Motion *ompl::geometric::RRTBispace::selectNMotion(const TreeData &tree, bool start, Motion *rmotion, bool &null)
+{
+    null = false;
+    Motion *nmotion = tree->nearest(rmotion);
+
+    if (!opt_->isFinite(nmotion->cost))
+    {
+        null = true;
+        Motion *last = nullptr;
+        Motion *root = nmotion;
+        while (root->parent != nullptr)
+        {
+            if (root->stateValid == InValid)
+                last = root;
+            root = root->parent;
+        }
+
+        if (opt_->isFinite(root->cost))
+            return last->parent;
+        else
+            last = root;
+
+        if (!last->valid && backStateRewireMotion(last, start))
+            null = false;
+        else 
+            last->valid = true;
+
+        if (null)
+        {
+            std::vector<Motion *> nbh;
+            tree->nearestK(last, last->nbh.size() + localK_, nbh);
+
+            bool found = false;
+            for (auto & nb : nbh)
+            {
+                if (opt_->isFinite(nb->cost))
+                {
+                    found = true;
+                    nmotion = nb;
+                    break;
+                }
+            }
+
+            if (!found)
+                localK_ += 5;
+            else 
+                localK_ = std::max(localK_ - 3, 5u);
+        }
+
+        if (!null)
+        {
+            unsigned int ind = 0;
+            if (start)
+            {
+                if (checkIfIn(pnullStartMotions_, last, ind))
+                    pnullStartMotions_.erase(pnullStartMotions_.begin() + ind);
+            }
+            else if (checkIfIn(pnullGoalMotions_, last, ind))
+                pnullGoalMotions_.erase(pnullGoalMotions_.begin() + ind);
+        }
+    }
+
+    return nmotion;
+}
+
+bool ompl::geometric::RRTBispace::rewireTree(BinaryHeap<Motion *, MotionCompare> &bh, Motion *m, bool start, bool &update)
+{
+    update = false;
+    bool valid = true;
+
+    unsigned int iter = 0;
+
+    updateQueue(bh, m);
+
+    while (valid && !bh.empty())
+    {
+        iter++;
+
+        Motion *motion = bh.top()->data;
+        motion->handle = nullptr;
+        bh.pop();
+
+        if (opt_->isFinite(motion->cost))
+        {
+            for (auto it = motion->nbh.begin(); it != motion->nbh.end();)
+            {
+                Motion *nb = it->first;
+                bool feas = it->second;
+
+                if (!opt_->isFinite(nb->cost) && nb->stateValid != InValid)
+                {
+                    if (nb->parent == nullptr)
+                    {
+                        if (nb->valid)
+                        {
+                            if (!isValid(motion, start))
+                            {
+                                if (iter == 1u)
+                                    valid = false;
+                                break;
+                            }
+                            else if (!feas) 
+                            {
+                                if (start ? checkInterMotion(motion, nb) : checkInterMotion(nb, motion))
+                                {
+                                    feas = true;
+                                    setMotionValid(motion, nb);
+                                }
+                                else 
+                                {
+                                    it = motion->nbh.erase(it);
+                                    removeFromNbSingleSide(nb, motion);
+                                    continue;
+                                }
+                            }
+                        }
+
+                        unsigned int ind = 0;
+                        if (start)
+                        {
+                            if (checkIfIn(pnullStartMotions_, nb, ind))
+                                pnullStartMotions_.erase(pnullStartMotions_.begin() + ind);
+                        }
+                        else if (checkIfIn(pnullGoalMotions_, nb, ind))
+                            pnullGoalMotions_.erase(pnullGoalMotions_.begin() + ind);
+                    }
+
+                    removeFromParent(nb);
+
+                    if (!feas)
+                        nb->valid = false;
+                    else 
+                        nb->valid = true;
+
+                    connectToPmotion(nb, motion, start);
+                    nb->parent->children.push_back(nb);
+                    updateQueue(bh, nb);
+                    update = true;
+                }
+
+                ++it;
+            }
+        }
+    }
+
+    while (!bh.empty())
+    {
+        bh.top()->data->handle = nullptr;
+        bh.pop();
+    }
+    bh.clear();
+
+    return valid;
+}
+
+void ompl::geometric::RRTBispace::updateQueue(BinaryHeap<Motion *, MotionCompare> &bh, Motion *motion)
+{
+    if (motion->handle != nullptr)
+        bh.update(motion->handle);
+    else
+        motion->handle = bh.insert(motion);
+}
+
+void ompl::geometric::RRTBispace::updateLeafQueue(BinaryHeap<Motion *, MotionCompare> &bh, Motion *motion)
+{
+    if (motion->children.empty())
+        updateQueue(bh, motion);
+    else 
+    {
+        std::size_t num = 0;
+        for (auto & child : motion->children)
+        {
+            if (child->stateValid != InValid)
+                updateLeafQueue(bh, child);
+            else 
+                num++;
+        }
+
+        if (num == motion->children.size())
+            updateQueue(bh, motion);
+    }
+}
+
+bool ompl::geometric::RRTBispace::growCurrentTree(const base::State *state) const
+{
+    return growStartTree(state);
+}
+
+bool ompl::geometric::RRTBispace::growStartTree(const base::State *state) const
+{
+    double dist1 = si_->distance(startMotions_[0]->state, state);
+    double dist2 = si_->distance(state, goalMotions_[0]->state);
+
+    for (std::size_t i = 1; i < startMotions_.size(); i++)
+    {
+        double d = si_->distance(startMotions_[i]->state, state);
+        if (d < dist1)
+            dist1 = d;
+    }
+
+    for (std::size_t i = 1; i < goalMotions_.size(); i++)
+    {
+        double d = si_->distance(state, goalMotions_[i]->state);
+        if (d < dist2)
+            dist2 = d;
+    }
+
+    return dist1 <= dist2;
+}
+
+double ompl::geometric::RRTBispace::penetrationDistance(const base::State *nstate, const base::State *state, bool start) const
+{
+    base::State *test = si_->allocState();
+    base::State *state1 = si_->allocState();
+    base::State *state2 = si_->allocState();
+
+    si_->copyState(state1, nstate);
+    si_->copyState(state2, state);
+
+    if (start)
+        si_->getStateSpace()->interpolate(state1, state2, 0.5, test);
+    else 
+        si_->getStateSpace()->interpolate(state2, state1, 0.5, test);
+
+    double d = start ? si_->distance(state1, state2) : si_->distance(state2, state1);;
+
+    while (d > 1.e-6)
+    {
+        if (start != growStartTree(test))
+        {
+            si_->copyState(state2, test);
+        }
+        else 
+        {
+            si_->copyState(state1, test);
+        }
+
+        if (start)
+            si_->getStateSpace()->interpolate(state1, state2, 0.5, test);
+        else 
+            si_->getStateSpace()->interpolate(state2, state1, 0.5, test);
+
+        d *= 0.5;
+    }
+
+    if (start)
+        d = si_->distance(test, state);
+    else 
+        d = si_->distance(state, test);
+
+    si_->freeState(test);
+    si_->freeState(state1);
+    si_->freeState(state2);
+
+    return d;
+}
+
+bool ompl::geometric::RRTBispace::growCurrentTree(const base::State *state, std::size_t sub) const
+{
+    return growStartTree(state, sub);
+}
+
+bool ompl::geometric::RRTBispace::growStartTree(const base::State *state, std::size_t sub) const
+{
+    double dist1 = si_->distance(startMotions_[0]->state, state, sub);
+    double dist2 = si_->distance(state, goalMotions_[0]->state, sub);
+
+    for (std::size_t i = 1; i < startMotions_.size(); i++)
+    {
+        double d = si_->distance(startMotions_[i]->state, state, sub);
+        if (d < dist1)
+            dist1 = d;
+    }
+
+    for (std::size_t i = 1; i < goalMotions_.size(); i++)
+    {
+        double d = si_->distance(state, goalMotions_[i]->state, sub);
+        if (d < dist2)
+            dist2 = d;
+    }
+
+    return dist1 <= dist2;
+}
+
+double ompl::geometric::RRTBispace::penetrationDistance(const base::State *nstate, const base::State *state, bool start, std::size_t sub) const
+{
+    base::State *test = si_->allocState();
+    base::State *state1 = si_->allocState();
+    base::State *state2 = si_->allocState();
+
+    si_->copyState(state1, nstate, sub);
+    si_->copyState(state2, state, sub);
+
+    if (start)
+        si_->getStateSpace()->interpolate(state1, state2, 0.5, test, sub);
+    else 
+        si_->getStateSpace()->interpolate(state2, state1, 0.5, test, sub);
+
+    double d = start ? si_->distance(state1, state2, sub) : si_->distance(state2, state1, sub);
+
+    while (d > 1.e-6)
+    {
+        if (start != growStartTree(test, sub))
+        {
+            si_->copyState(state2, test, sub);
+        }
+        else 
+        {
+            si_->copyState(state1, test, sub);
+        }
+
+        if (start)
+            si_->getStateSpace()->interpolate(state1, state2, 0.5, test, sub);
+        else 
+            si_->getStateSpace()->interpolate(state2, state1, 0.5, test, sub);
+
+        d *= 0.5;
+    }
+
+    if (start)
+        d = si_->distance(test, state, sub);
+    else 
+        d = si_->distance(state, test, sub);
+
+    si_->freeState(test);
+    si_->freeState(state1);
+    si_->freeState(state2);
+
+    return d;
+}
+
+ompl::geometric::RRTBispace::GrowState ompl::geometric::RRTBispace::biasGrow(TreeData &tree, TreeGrowingInfo &tgi, Motion *&rmotion, bool optimal)
+{
+    GrowState gs = TRAPPED;
+
+    if (tgi.start ? goalBiasPdf_.size > 0 && rng_.uniform01() < goalBiasProb_ : startBiasPdf_.size > 0 && rng_.uniform01() < startBiasProb_)
+    {
+        GridCell *cell = nullptr; 
+        MotionPDF &motionPdf = tgi.start ? goalBiasPdf_ : startBiasPdf_;
+        rmotion = selectPdfMotion(motionPdf, cell);
+
+        if (rmotion != nullptr)
+        {
+            if (!rmotion->inConnection && opt_->isFinite(rmotion->cost))
+            {
+                bool null;
+                Motion *nmotion = selectNMotion(tree, tgi.start, rmotion, null);
+                if (opt_->isFinite(nmotion->cost) && isValid(nmotion, tgi.start))
+                {
+                    double maxDistance = maxDistance_;
+                    if (treatedAsMultiSubapce_)
+                        maxDistance *= si_->getStateSpace()->getSubspaceCount();
+                    if (tgi.start ? si_->distance(nmotion->state, rmotion->state) < maxDistance : si_->distance(rmotion->state, nmotion->state) < maxDistance)
+                    {
+                        if (tgi.start ? checkInterMotion(nmotion, rmotion) : checkInterMotion(rmotion, nmotion))
+                        {
+                            Motion *motion = new Motion(si_);
+                            si_->copyState(motion->state, rmotion->state);
+                            connectToPmotion(motion, nmotion, tgi.start);
+                            motion->stateValid = Valid;
+                            motion->valid = true;
+                            motion->parent->children.push_back(motion);
+
+                            if (lazyPath_ || lazyNode_ || optimal)
+                            {
+                                getNeighbors(tree, motion, tgi.start);
+
+                                unsigned int ind = 0;
+                                if (!checkIfIn(motion->nbh, nmotion, ind))
+                                    insertNeighbor(motion, nmotion);
+
+                                if (lazyNode_)
+                                {
+                                    for (auto it = motion->nbh.begin(); it != motion->nbh.end();)
+                                    {
+                                        if (it->first->stateValid == InValid)
+                                            it = motion->nbh.erase(it);
+                                        else 
+                                            it++;
+                                    }
+                                }
+
+                                for (auto it = motion->nbh.begin(); it != motion->nbh.end(); it++)
+                                    insertNeighbor(it->first, motion);
+
+                                setMotionValid(nmotion, motion);
+                            }
+
+                            tree->add(motion);
+
+                            tgi.xmotion = motion;
+
+                            gs = REACHED;
+                        }
+                    }
+                    else
+                    {
+                        bool checkConnection = false;
+                        bool otherSide = false;
+                        if (growTree(tree, tgi, rmotion, checkConnection, otherSide, optimal) == REACHED)
+                        {
+                            gs = REACHED;
+                        }
+                    } 
+                }
+            }
+
+            if(gs == REACHED)
+            {
+                double w = motionPdf.pdf.getWeight(cell->data.elem_);
+                if (w < 1.0)
+                { 
+                    w /= (1.0 - w);
+                    if (treatedAsMultiSubapce_)
+                        w *= static_cast<double>(si_->getStateSpace()->getSubspaceCount());
+                    motionPdf.pdf.update(cell->data.elem_, w);
+                }
+            }
+            else
+            {
+                double w = motionPdf.pdf.getWeight(cell->data.elem_);
+                if (treatedAsMultiSubapce_)
+                    w /= (static_cast<double>(si_->getStateSpace()->getSubspaceCount()) + w);
+                else
+                    w /= (1.0 + w);
+                motionPdf.pdf.update(cell->data.elem_, w);
+
+                if (treatedAsMultiSubapce_ ? w < 0.01 : w < 0.05)
+                {
+                    removePdfMotion(motionPdf, rmotion);
+                    rmotion->middle = false;
+                }
+            }
+
+            std::vector<double> weights;
+            motionPdf.pdf.getWeights(weights);
+            if (!weights.empty())
+            {
+                if (tgi.start)
+                    goalBiasProb_ = *std::max_element(weights.begin(), weights.end());
+                else 
+                    startBiasProb_ = *std::max_element(weights.begin(), weights.end());
+            }
+        }
+    }
+
+    return gs;
+}
+
+bool ompl::geometric::RRTBispace::selectCMotion(std::size_t &index, bool &reverse, double ratio1)
+{
+    index = 0;
+
+    bool nconnect = false;
+
+    std::size_t iter = 0;
+    if (reverse)
+        iter = connectionPoint_.size() - 1;
+
+    while (iter < connectionPoint_.size())
+    {
+        auto pair = connectionPoint_[iter];
+
+        base::Cost temp = opt_->combineCosts(pair.first->cost, pair.second->cost);
+
+        if (opt_->isFinite(temp) && opt_->isCostBetterThan(temp, bestCost_))
+        {
+            double ratio = opt_->isFinite(bestCost_) ? std::abs((temp.value() - bestCost_.value()) / bestCost_.value()) : 1.0;
+
+            if (ratio > ratio1 && pair.first != bestStartMotion_)
+            {
+                bool valid = true;
+                if (pair.first->parent != nullptr)
+                {
+                    valid = isValid(pair.first->parent, true);
+                }
+
+                if (valid)
+                {
+                    valid = pair.first->valid;
+                    if (!valid)
+                    {
+                        valid = checkStartMotion(pair.first->parent, pair.first);
+                        if (!valid)
+                        {
+                            removeFromParent(pair.first);
+                            pair.first->parent = nullptr;
+                            valid = backPathRewireMotion(pair.first, true);
+                            if (!valid)
+                            {
+                                pair.first->valid = true;
+                                pnullStartMotions_.push_back(pair.first);
+                            }
+                        }
+                    }
+                }
+
+                if (valid)
+                {
+                    if (pair.second->parent != nullptr)
+                    {
+                        valid = isValid(pair.second->parent, false);
+                    }
+
+                    if (valid)
+                    {
+                        valid = pair.second->valid;
+                        if (!valid)
+                        {
+                            valid = checkGoalMotion(pair.second, pair.second->parent);
+                            if (!valid)
+                            {
+                                removeFromParent(pair.second);
+                                pair.second->parent = nullptr;
+                                valid = backPathRewireMotion(pair.second, false);
+                                if (!valid)
+                                {
+                                    pair.second->valid = true;
+                                    pnullGoalMotions_.push_back(pair.second);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (valid)
+                {
+                    index = iter;
+                    nconnect = true;
+                    reverse = !reverse;
+                    break;
+                }
+            }
+        }
+
+        if (reverse)
+            iter--;
+        else 
+            iter++;
+    }
+
+    return nconnect;
+}
+
+bool ompl::geometric::RRTBispace::isPathValid(Motion *motion, Motion *otherMotion)
+{
+    bool valid = true;
+
+    checkedStartPath_.clear();
+    checkedGoalPath_.clear();
+
+    if (notReversePathCheck_ ? !isPathValid(motion, true) : !isPathValidReverse(motion, true))
+        valid = false;
+
+    if (notReversePathCheck_ ? !isPathValid(otherMotion, false) : !isPathValidReverse(otherMotion, false))
+        valid = false;
+
+    notReversePathCheck_++;
+    notReversePathCheck_ %= 3;
+
+    return valid;
+}
+
+bool ompl::geometric::RRTBispace::isPathValid(Motion *motion, bool start)
+{
+    if (lazyNode_ && !isStateValid(motion, start))
+        return false;
+
+    if (!lazyPath_)
+        return true;
+
+    bool tvalid = true;
+    bool firstinvalid = false;
+
+    Motion *connect = motion;
+
+    while (motion->parent != nullptr)
+    {
+        Motion *pmotion = motion->parent;
+
+        if (start)
+            checkedStartPath_.push_back(motion);
+        else 
+            checkedGoalPath_.push_back(motion);
+
+        if (tvalid)
+        {
+            if (start ? !checkStartMotion(motion->parent, motion) : !checkGoalMotion(motion, motion->parent))
+            {
+                removeFromParent(motion);
+                motion->parent = nullptr;
+
+                if (backPathRewireMotion(motion, start))
+                {
+                    motion = motion->parent;
+                    continue;
+                }
+                else 
+                {
+                    tvalid = false;
+                    motion->valid = true;
+                    if (start)
+                        pnullStartMotions_.push_back(motion);
+                    else 
+                        pnullGoalMotions_.push_back(motion);
+                    if (motion == connect)
+                    {
+                        firstinvalid = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        motion = pmotion;
+    }
+
+    if (firstinvalid)
+    {
+        checkedStartPath_.clear();
+        checkedGoalPath_.clear();
+    }
+    else 
+    {
+        if (start)
+            checkedStartPath_.push_back(motion);
+        else 
+            checkedGoalPath_.push_back(motion);
+    }
+
+    return tvalid;
+}
+
+bool ompl::geometric::RRTBispace::isStateValid(Motion *motion, bool start)
+{
+    if (!lazyNode_)
+        return true;
+
+    bool tvalid = true;
+    bool valid = true;
+
+    Motion *last = nullptr;
+
+    while (motion->parent != nullptr)
+    {
+        Motion *pmotion = motion->parent;
+
+        if (!isValid(motion, start))
+        {
+            valid = false;
+
+            if (last != nullptr)
+            {
+                removeFromParent(last);
+                last->parent = nullptr;
+
+                if (backStateRewireMotion(last, start))
+                {
+                    valid = true;
+                    pmotion = last->parent;
+                }
+                else 
+                {
+                    last->valid = true;
+                    if (start)
+                        pnullStartMotions_.push_back(last);
+                    else 
+                        pnullGoalMotions_.push_back(last);
+                }
+            }
+
+            if (!valid)
+            {
+                tvalid = false;
+                last = nullptr;
+                break;
+            }
+        }
+        else
+            last = motion;
+
+        motion = pmotion;
+    }
+
+    return tvalid;
+}
+
+bool ompl::geometric::RRTBispace::isPathValidReverse(Motion *motion, bool start)
+{
+    if (lazyNode_ && !isStateValidReverse(motion, start))
+        return false;
+
+    if (!lazyPath_)
+        return true;
+
+    bool tvalid = true;
+    bool firstinvalid = false;
+    Motion *connect = motion;
+
+    std::vector<Motion *> mpath;
+    while (motion != nullptr)
+    {
+        if (start)
+            checkedStartPath_.push_back(motion);
+        else 
+            checkedGoalPath_.push_back(motion);
+        mpath.push_back(motion);
+        motion = motion->parent;
+    }
+    mpath.pop_back();
+
+    for (std::size_t i = mpath.size() - 1; i < mpath.size(); i--)
+    {
+        Motion *motion = mpath[i];
+        if (start ? !checkStartMotion(motion->parent, motion) : !checkGoalMotion(motion, motion->parent))
+        {
+            removeFromParent(motion);
+            motion->parent = nullptr;
+
+            if (backPathRewireMotion(motion, start) && isPathValid(motion->parent, start))
+            {
+                if (start)
+                    checkedStartPath_.resize(i+1);
+                else 
+                    checkedGoalPath_.resize(i+1);
+                Motion *last = motion->parent;
+                while (last != nullptr)
+                {
+                    if (start)
+                        checkedStartPath_.push_back(last);
+                    else 
+                        checkedGoalPath_.push_back(last);
+                    last = last->parent;
+                }
+            }
+            else 
+            {
+                tvalid = false;
+                if (motion->parent == nullptr)
+                {
+                    motion->valid = true;
+                    if (start)
+                        pnullStartMotions_.push_back(motion);
+                    else 
+                        pnullGoalMotions_.push_back(motion);
+                }
+                if (motion == connect)
+                    firstinvalid = true;
+                break;
+            }
+        }
+    }
+
+    if (firstinvalid)
+    {
+        checkedStartPath_.clear();
+        checkedGoalPath_.clear();
+    }
+
+    return tvalid;
+}
+
+bool ompl::geometric::RRTBispace::isStateValidReverse(Motion *motion, bool start)
+{
+    if (!lazyNode_)
+        return true;
+
+    bool tvalid = true;
+    bool valid = true;
+
+    std::vector<Motion *> mpath;
+    while (motion->parent != nullptr)
+    {
+        mpath.push_back(motion);
+        motion = motion->parent;
+    }
+
+    for (std::size_t i = mpath.size() - 1; i < mpath.size(); i--)
+    {
+        Motion *pmotion = mpath[i];
+        if (!isValid(pmotion, start))
+        {
+            valid = false;
+            i--;
+            Motion *last = nullptr;
+            while (i < mpath.size())
+            {
+                if (isValid(mpath[i], start))
+                {
+                    last = mpath[i];
+                    break;
+                }
+                i--;
+            }
+
+            if (last != nullptr)
+            {
+                removeFromParent(last);
+                last->parent = nullptr;
+
+                if (backStateRewireMotion(last, start) && isStateValid(last->parent, start))
+                {
+                    valid = true;
+                }
+                else if (last->parent == nullptr) 
+                {
+                    last->valid = true;
+                    if (start)
+                        pnullStartMotions_.push_back(last);
+                    else 
+                        pnullGoalMotions_.push_back(last);
+                }
+            }
+
+            if (!valid)
+            {
+                tvalid = false;
+                last = nullptr;
+                break;
+            }
+        }
+    }
+
+    return tvalid;
+}
+
+bool ompl::geometric::RRTBispace::backPathRewireMotion(Motion *motion, bool start)
+{
+    bool valid = false;
+
+    CostMotionCompare compareFn(motion, opt_, start);
+    std::sort(motion->nbh.begin(), motion->nbh.end(), compareFn);
+
+    for (auto it = motion->nbh.begin(); it != motion->nbh.end();)
+    {
+        Motion *nb = it->first;
+
+        if (!opt_->isFinite(nb->cost))
+            break;
+
+        if (!isValid(nb, start))
+        {
+            continue;
+        }
+
+        if (!it->second)
+        {
+            if (start ? !checkStartMotion(nb, motion) : !checkGoalMotion(motion, nb))
+                continue;
+        }
+
+        if (!lazyNode_ || isStateValid(nb, start))
+        {
+            connectToPmotion(motion, nb, start);
+            motion->parent->children.push_back(motion);
+            motion->valid = true;
+
+            valid = true;
+            break;
+        }
+        else 
+            motion->valid = false;
+
+        it++;
+    }
+
+    return valid;
+}
+
+bool ompl::geometric::RRTBispace::backStateRewireMotion(Motion *motion, bool start)
+{
+    bool valid = false;
+
+    CostMotionCompare compareFn(motion, opt_, start);
+    std::sort(motion->nbh.begin(), motion->nbh.end(), compareFn);
+
+    for (auto it = motion->nbh.begin(); it != motion->nbh.end();)
+    {
+        Motion *nb = it->first;
+
+        if (!opt_->isFinite(nb->cost))
+            break;
+
+        if (!isValid(nb, start))
+        {
+            continue;
+        }
+
+        connectToPmotion(motion, nb, start);
+        motion->parent->children.push_back(motion);
+
+        if (it->second)
+            motion->valid = true;
+        else 
+            motion->valid = false;
+
+        valid = true;
+        break;
+    }
+
+    return valid;
+}
+
+void ompl::geometric::RRTBispace::removeInvalidMotions(double ratio)
+{
+    if ((double)invalidStartNum_ / (double) tStart_->size() > ratio)
+    {
+        tStart_->clear();
+        std::size_t num = pnullStartMotions_.size();
+
+        for (auto & rootMotion : startMotions_)
+            removeInvalidMotions(tStart_, rootMotion, true);
+
+        std::size_t index = 0;
+        for (std::size_t i = 0; i < num; i++)
+        {
+            Motion *pnull = pnullStartMotions_[index];
+            if (pnull->stateValid == InValid)
+                pnullStartMotions_.erase(pnullStartMotions_.begin() + index);
+            else 
+                index++;
+
+            removeInvalidMotions(tStart_, pnull, true);
+        }
+
+        invalidStartNum_ = 0;
+    }
+
+    if ((double)invalidGoalNum_ / (double) tGoal_->size() > ratio)
+    {
+        tGoal_->clear();
+        std::size_t num = pnullGoalMotions_.size();
+
+        for (auto & rootMotion : goalMotions_)
+            removeInvalidMotions(tGoal_, rootMotion, false);
+        
+        std::size_t index = 0;
+        for (std::size_t i = 0; i < num; i++)
+        {
+            Motion *pnull = pnullGoalMotions_[index];
+            if (pnull->stateValid == InValid)
+                pnullGoalMotions_.erase(pnullGoalMotions_.begin() + index);
+            else 
+                index++;
+
+            removeInvalidMotions(tGoal_, pnull, false);
+        }
+
+        invalidGoalNum_ = 0;
+    }
+}
+
+void ompl::geometric::RRTBispace::removeInvalidMotions(TreeData &tree, Motion *motion, bool start)
+{
+    if (motion->stateValid == InValid)
+    {
+        for (auto & child : motion->children)
+        {
+            child->parent = nullptr;
+
+            if (child->stateValid != InValid)
+            {
+                if (start)
+                    pnullStartMotions_.push_back(child);
+                else 
+                    pnullGoalMotions_.push_back(child);
+            }
+            removeInvalidMotions(tree, child, start);
+        }
+
+        removeFromParent(motion);
+        removeFromNb(motion);
+        si_->freeState(motion->state);
+        delete motion;
+    }
+    else 
+    {
+        tree->add(motion);
+        std::size_t num = motion->children.size();
+        std::size_t index = 0;
+        for (std::size_t i = 0; i < num; i++)
+        {
+            Motion *child = motion->children[index];
+            if (child->stateValid == InValid)
+            {
+                child->parent = nullptr;
+                motion->children.erase(motion->children.begin() + index);
+            }
+            else 
+                index++;
+            removeInvalidMotions(tree, child, start);
+        }
+    }
+}
+
+void ompl::geometric::RRTBispace::localInfeasible(int &tree)
+{
+    if (opt_->isFinite(checkedStartPath_.front()->cost))
+    {
+        tree = 1;
+    }
+    else if (opt_->isFinite(checkedGoalPath_.front()->cost))
+    {
+        tree = 0;
+    }
+    else 
+    {
+        tree = -1;
+    }
+}
+
+void ompl::geometric::RRTBispace::addPdfMotion(MotionPDF &pdf, Motion *motion, bool start)
+{
+    Grid<MotionInfo>::Coord coord(projectionEvaluator_->getDimension());
+    projectionEvaluator_->computeCoordinates(motion->state, coord);
+
+    Grid<MotionInfo>::Cell *cell = pdf.grid.getCell(coord);
+    if (cell)
+        cell->data.push_back(motion);
+    else
+    {
+        cell = pdf.grid.createCell(coord);
+        cell->data.push_back(motion);
+        pdf.grid.add(cell);
+        cell->data.elem_ = pdf.pdf.add(cell, 0.1);
+
+        if (start)
+            startBiasProb_ = 0.1;
+        else 
+            goalBiasProb_ = 0.1;
+    }
+    pdf.size++;
+}
+
+ompl::geometric::RRTBispace::Motion *ompl::geometric::RRTBispace::selectPdfMotion(MotionPDF &pdf, GridCell *&cell)
+{
+    cell = pdf.pdf.sample(rng_.uniform01());
+    if (cell && !cell->data.empty())
+    {
+        double w = pdf.pdf.getWeight(cell->data.elem_);
+        if (treatedAsMultiSubapce_)
+            w /= (static_cast<double>(si_->getStateSpace()->getSubspaceCount()) + w);
+        else
+            w /= (1.0 + w);
+        pdf.pdf.update(cell->data.elem_, w);
+        return cell->data[rng_.uniformInt(0, cell->data.size() - 1)];
+    }
+    else 
+        return nullptr;
+}
+
+void ompl::geometric::RRTBispace::removePdfMotion(MotionPDF &pdf, Motion *motion)
+{
+    Grid<MotionInfo>::Coord coord(projectionEvaluator_->getDimension());
+    projectionEvaluator_->computeCoordinates(motion->state, coord);
+
+    Grid<MotionInfo>::Cell *cell = pdf.grid.getCell(coord);
+    if (cell)
+    {
+        for (std::size_t i = 0; i < cell->data.size(); ++i)
+        {
+            if (cell->data[i] == motion)
+            {
+                cell->data.erase(cell->data.begin() + i);
+                pdf.size--;
+                break;
+            }
+        }
+
+        if (cell->data.empty())
+        {
+            pdf.pdf.remove(cell->data.elem_);
+            pdf.grid.remove(cell);
+            pdf.grid.destroyCell(cell);
+        }
+    }
+}
+
+bool ompl::geometric::RRTBispace::checkIfIn(const std::vector<Motion *> &motions, Motion *motion, unsigned int &ind) const
+{
+    ind = 0;
+
+    if (motions.empty())
+        return false;
+
+    if (motions.back() == motion)
+    {
+        ind = motions.size() - 1;
+        return true;
+    }
+
+    bool in = false;
+    for (auto & m : motions)
+    {
+        if (m == motion)
+        {
+            in = true;
+            break;
+        }
+        ++ind;
+    }
+
+    return in;
+}
+
+bool ompl::geometric::RRTBispace::checkIfIn(const std::vector<std::pair<Motion *, bool>> &motions, Motion *motion, unsigned int &ind) const
+{
+    ind = 0;
+
+    if (motions.empty())
+        return false;
+
+    if (motions.back().first == motion)
+    {
+        ind = motions.size() - 1;
+        return true;
+    }
+
+    bool in = false;
+    for (auto & m : motions)
+    {
+        if (m.first == motion)
+        {
+            in = true;
+            break;
+        }
+        ++ind;
+    }
+
+    return in;
+}
+
+void ompl::geometric::RRTBispace::connectToPmotion(Motion *motion, Motion *pmotion, bool start) const
+{
+    motion->parent = pmotion;
+    motion->root = pmotion->root;
+    motion->incCost = start ? opt_->motionCost(pmotion->state, motion->state) : opt_->motionCost(motion->state, pmotion->state);
+    motion->cost = opt_->combineCosts(pmotion->cost, motion->incCost);
+
+    updateChildCosts(motion);
+}
+
+std::size_t ompl::geometric::RRTBispace::getNeighbors(const TreeData &tree, Motion *motion, bool /*start*/)
+{
+    if (motion->nbh.size() > 0)
+        return motion->nbh.size();
+
+    std::vector<Motion *> nbh;
+    tree->nearestK(motion, neighborNum_, nbh);
+
+    if (lazyNode_)
+    {
+        for (auto it = nbh.begin(); it != nbh.end();)
+        {
+            Motion *nb = *it;
+            if (nb->stateValid == InValid) 
+                it = nbh.erase(it);
+            else
+                it++;
+        }
+    }
+
+    std::size_t num = 0;
+
+    double dist = 1.0002 * maxDistance_;
+    if (treatedAsMultiSubapce_)
+        dist *= si_->getStateSpace()->getSubspaceCount();
+    if (sortedK_)
+    {
+        for (auto & nb : nbh)
+        {
+            if (si_->distance(nb->state, motion->state) > dist) 
+            {
+                nbh.resize(num);
+                break;
+            }
+
+            num++;
+        }
+    }
+    else 
+    {
+        for (auto it = nbh.begin(); it != nbh.end();)
+        {
+            Motion *nb = *it;
+            if (si_->distance(nb->state, motion->state) > dist) 
+                it = nbh.erase(it);
+            else 
+                it++;
+        }
+    }
+
+    num = nbh.size();
+    motion->nbh.resize(num);
+    std::transform(nbh.begin(), nbh.end(), motion->nbh.begin(),
+                   [](Motion *m) { return std::pair<Motion *, bool>(m, false); });
+
+    return num;
+}
+
+void ompl::geometric::RRTBispace::insertNeighbor(Motion *pmotion, Motion *motion)
+{
+    pmotion->nbh.emplace_back(motion, false);
+}
+
+void ompl::geometric::RRTBispace::removeFromParent(Motion *motion)
+{
+    if (motion->parent != nullptr)
+    {
+        if (motion->parent->children.back() == motion)
+            motion->parent->children.pop_back();
+        else 
+        {
+            for (auto it = motion->parent->children.begin(); it != motion->parent->children.end(); ++it)
+            {
+                if (*it == motion)
+                {
+                    motion->parent->children.erase(it);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+void ompl::geometric::RRTBispace::removeFromNb(Motion *motion)
+{
+    for (auto & itnb : motion->nbh)
+    {
+        Motion *nb = itnb.first;
+        removeFromNbSingleSide(nb, motion);
+    }
+}
+
+void ompl::geometric::RRTBispace::removeFromNb(Motion *pmotion, Motion *motion)
+{
+    removeFromNbSingleSide(motion, pmotion);
+    removeFromNbSingleSide(pmotion, motion);
+}
+
+bool ompl::geometric::RRTBispace::removeFromNbSingleSide(Motion *pmotion, Motion *motion)
+{
+    bool in = false;
+
+    if (!pmotion->nbh.empty())
+    {
+        if (pmotion->nbh.back().first == motion)
+        {
+            in = true;
+            pmotion->nbh.pop_back();
+        }
+        else 
+        {
+            for (auto it = pmotion->nbh.begin(); it != pmotion->nbh.end(); ++it)
+            {
+                if (it->first == motion)
+                {
+                    in = true;
+                    pmotion->nbh.erase(it);           
+                    break;
+                }
+            }
+        }
+    }
+
+    return in;
+}
+
+void ompl::geometric::RRTBispace::setMotionValid(Motion *pmotion, Motion *motion)
+{
+    if (!motion->nbh.empty())
+    {
+        if (motion->nbh.back().first == pmotion)
+            motion->nbh.back().second = true;
+        else 
+        {
+            for (auto it = motion->nbh.begin(); it != motion->nbh.end(); ++it)
+            {
+                if (it->first == pmotion)
+                {
+                    it->second = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!pmotion->nbh.empty())
+    {
+        if (pmotion->nbh.back().first == motion)
+            pmotion->nbh.back().second = true;
+        else 
+        {
+            for (auto it = pmotion->nbh.begin(); it != pmotion->nbh.end(); ++it)
+            {
+                if (it->first == motion)
+                {
+                    it->second = true;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+void ompl::geometric::RRTBispace::updateChildCosts(Motion *motion) const
+{
+    for (std::size_t i = 0; i < motion->children.size(); ++i)
+    {
+        if (motion->children[i]->stateValid != InValid)
+        {
+            motion->children[i]->cost = opt_->combineCosts(motion->cost, motion->children[i]->incCost);
+            motion->children[i]->root = motion->root;
+            updateChildCosts(motion->children[i]);
+        }
+    }
+}
+
+void ompl::geometric::RRTBispace::setMotionInfinityCost(Motion *motion) const
+{
+    if (opt_->isFinite(motion->cost))
+    {
+        motion->cost = opt_->infiniteCost();
+        updateChildCosts(motion);
+    }
+}
+
+bool ompl::geometric::RRTBispace::sampleUniform(base::State *state, bool /*start*/)
+{
+    guniform_ = true;
+    sampler_->sampleUniform(state);
+    return true;
+}
+
+// check 
+bool ompl::geometric::RRTBispace::isValid(const base::State *state)
+{
+    return si_->isValid(state);
+}
+
+bool ompl::geometric::RRTBispace::isValid(Motion *motion, bool start)
+{
+    if (!lazyNode_)
+        return true;
+
+    bool valid = true;
+    
+    if (motion->stateValid == UnCkecked)
+    {
+        if (isValid(motion->state))
+        {
+            motion->stateValid = Valid;
+            if (motion->middle)
+            {
+                if (start)
+                    addPdfMotion(startBiasPdf_, motion, true);
+                else 
+                    addPdfMotion(goalBiasPdf_, motion, false);
+
+                ompl::base::State *biasstate = si_->allocState();
+                si_->copyState(biasstate, motion->state);
+                if (start)
+                    startBiasStates_.push_back(biasstate);
+                else
+                    goalBiasStates_.push_back(biasstate);
+            }
+        }
+        else 
+        {
+            motion->stateValid = InValid;
+            setMotionInfinityCost(motion);
+            if (start)
+                invalidStartNum_++;
+            else 
+                invalidGoalNum_++;
+            removeFromNb(motion);
+            motion->nbh.clear();
+        }
+    }
+
+    if (motion->stateValid == InValid)
+        valid = false;
+
+    return valid;
+}
+
+bool ompl::geometric::RRTBispace::checkInterMotion(const Motion *motion1, const Motion *motion2)
+{
+    /*assume motion1, motion2 are valid*/
+    bool result = true;
+
+    const base::State *s1 = motion1->state, *s2 = motion2->state;
+
+    int nd = si_->getStateSpace()->validSegmentCount(s1, s2);
+
+    if (nd >= 2)
+    {
+        std::queue<std::pair<int, int>> pos;
+        pos.emplace(1, nd - 1);
+
+        base::State *state = si_->allocState();
+
+        /* repeatedly subdivide the path segment in the middle (and check the middle) */
+        while (!pos.empty())
+        {
+            std::pair<int, int> x = pos.front();
+
+            int mid = (x.first + x.second) / 2;
+            si_->getStateSpace()->interpolate(s1, s2, (double)mid / (double)nd, state);
+
+            if (!isValid(state))
+            {
+                result = false;
+                break;
+            }
+
+            pos.pop();
+
+            if (x.first < mid)
+                pos.emplace(x.first, mid - 1);
+            if (x.second > mid)
+                pos.emplace(mid + 1, x.second);
+        }
+
+        si_->freeState(state);
+    }
+
+    return result;
+}
+
+bool ompl::geometric::RRTBispace::checkStartMotion(Motion *smotion, Motion *gmotion)
+{
+    bool valid = false;
+
+    if (!gmotion->valid)
+    {
+        Motion *last = nullptr;
+        valid = checkInterMotion(smotion, gmotion, true, last);
+        if (!valid)
+            setMotionInfinityCost(gmotion);
+        if (last != nullptr)
+        {
+            last->valid = true;
+            last->stateValid = Valid;
+            connectToPmotion(last, smotion, true);
+
+            insertNeighbor(last, last->parent);
+            insertNeighbor(last->parent, last);
+            setMotionValid(last->parent, last);
+            last->parent->children.push_back(last);
+
+            tStart_->add(last);
+        }
+    }
+    else 
+        valid = true;
+
+    return valid;
+}
+
+bool ompl::geometric::RRTBispace::checkGoalMotion(Motion *smotion, Motion *gmotion)
+{
+    bool valid = false;
+
+    if (!smotion->valid)
+    {
+        Motion *last = nullptr;
+
+        valid = checkInterMotion(smotion, gmotion, false, last);
+        if (!valid)
+            setMotionInfinityCost(smotion);
+        if (last != nullptr)
+        {
+            last->valid = true;
+            last->stateValid = Valid;
+            connectToPmotion(last, gmotion, false);
+
+            insertNeighbor(last, last->parent);
+            insertNeighbor(last->parent, last);
+            setMotionValid(last->parent, last);
+            last->parent->children.push_back(last);
+
+            tGoal_->add(last);
+        }
+    }
+    else 
+        valid = true;
+
+    return valid;
+}
+
+bool ompl::geometric::RRTBispace::checkInterMotion(Motion *smotion, Motion *gmotion, bool start, Motion *&last)
+{
+    auto its = smotion->nbh.end();
+    auto itg = gmotion->nbh.end();
+
+    unsigned int ind = 0;
+
+    bool in = checkIfIn(smotion->nbh, gmotion, ind);
+    if (!in)
+        OMPL_ERROR("%s gmotion is not in the neighborhood of smotion", getName().c_str());
+    else 
+        its = smotion->nbh.begin() + ind;
+    assert(in);
+
+    in = checkIfIn(gmotion->nbh, smotion, ind);
+    if (!in)
+        OMPL_ERROR("%s smotion is not in the neighborhood of gmotion", getName().c_str());
+    else 
+        itg = gmotion->nbh.begin() + ind;
+    assert(in);
+
+    /*assume smotion, gmotion are valid*/
+    bool result = true;
+    last = nullptr;
+
+    const base::State *s1 = smotion->state, *s2 = gmotion->state;
+
+    int nd = si_->getStateSpace()->validSegmentCount(s1, s2);
+
+    if (nd >= 2)
+    {
+        std::queue<std::pair<int, int>> pos;
+        pos.emplace(1, nd - 1);
+
+        std::map<int, bool> inMotions;
+        for (int i = 1; i < nd; i++)
+            inMotions[i] = false;
+
+        base::State *state= si_->allocState();
+
+        int mid = 0;
+
+        /* repeatedly subdivide the path segment in the middle (and check the middle) */
+        while (!pos.empty())
+        {
+            std::pair<int, int> x = pos.front();
+
+            mid = (x.first + x.second) / 2;
+            si_->getStateSpace()->interpolate(s1, s2, (double)mid / (double)nd, state);
+
+            if (!isValid(state))
+            {
+                result = false;
+                break;
+            }
+
+            inMotions.at(mid) = true;
+
+            pos.pop();
+
+            if (x.first < mid)
+                pos.emplace(x.first, mid - 1);
+            if (x.second > mid)
+                pos.emplace(mid + 1, x.second);
+        }
+
+        if (!result && (start ? mid != 1 : mid != nd-1)) 
+        {
+            Motion *motion = nullptr;
+
+            int i = start ? 1 : nd -1;
+            bool done = start ? i < mid : i > mid;
+
+            while (done)
+            {
+                si_->getStateSpace()->interpolate(s1, s2, (double)i / (double)nd, state);
+
+                if (!inMotions.at(i))
+                {
+                    if (!isValid(state))
+                    {
+                        break;
+                    }
+
+                    inMotions.at(i) = true;
+                }
+
+                if (inMotions.at(i))
+                {
+                    if (!motion)
+                        motion = new Motion(si_);
+
+                    si_->copyState(motion->state, state);
+                }
+
+                i = start ? i + 1: i -1;
+                done = start ? i < mid : i > mid;
+            }
+
+            if (motion != nullptr)
+                last =  motion;
+        }
+
+        si_->freeState(state);
+    }
+
+    if (result)
+    {
+        if (start)
+            gmotion->valid = true;
+        else 
+            smotion->valid = true;
+        setMotionValid(gmotion, smotion);
+    }
+    else
+    {
+        smotion->nbh.erase(its);
+        gmotion->nbh.erase(itg);
+    }
+
+    return result;
+}
+
+void ompl::geometric::RRTBispace::getPlannerData(base::PlannerData &data) const
+{
+    Planner::getPlannerData(data);
+
+    std::vector<Motion *> motions;
+    if (tStart_)
+        tStart_->list(motions);
+
+    for (auto & motion : motions)
+    {
+        if (motion->parent == nullptr)
+            data.addStartVertex(base::PlannerDataVertex(motion->state, 1));
+        else
+        {
+            data.addEdge(base::PlannerDataVertex(motion->parent->state, 1), base::PlannerDataVertex(motion->state, 1));
+        }
+    }
+
+    motions.clear();
+    if (tGoal_)
+        tGoal_->list(motions);
+
+    for (auto & motion : motions)
+    {
+        if (motion->parent == nullptr)
+            data.addGoalVertex(base::PlannerDataVertex(motion->state, 2));
+        else
+        {
+            // The edges in the goal tree are reversed to be consistent with start tree
+            data.addEdge(base::PlannerDataVertex(motion->state, 2), base::PlannerDataVertex(motion->parent->state, 2));
+        }
+    }
+}
+
+void ompl::geometric::RRTBispace::getPlannerData(base::PlannerData &data, int sub) const
+{
+    assert(sub >= 0);
+
+    Planner::getPlannerData(data);
+
+    std::vector<Motion *> motions;
+    if (tStart_)
+        tStart_->list(motions);
+
+    for (auto & motion : motions)
+    {
+        if (motion->parent == nullptr)
+            data.addStartVertex(base::PlannerDataVertex(motion->state->as<base::CompoundState>()->components[sub], 1));
+        else
+        {
+            data.addEdge(base::PlannerDataVertex(motion->parent->state->as<base::CompoundState>()->components[sub], 1), base::PlannerDataVertex(motion->state->as<base::CompoundState>()->components[sub], 1));
+        }
+    }
+
+    motions.clear();
+    if (tGoal_)
+        tGoal_->list(motions);
+
+    for (auto & motion : motions)
+    {
+        if (motion->parent == nullptr)
+            data.addGoalVertex(base::PlannerDataVertex(motion->state->as<base::CompoundState>()->components[sub], 2));
+        else
+        {
+            // The edges in the goal tree are reversed to be consistent with start tree
+            data.addEdge(base::PlannerDataVertex(motion->state->as<base::CompoundState>()->components[sub], 2), base::PlannerDataVertex(motion->parent->state->as<base::CompoundState>()->components[sub], 2));
+        }
+    }
+}
+
+bool ompl::geometric::RRTBispace::keepCondition2(Motion *motion, const base::Cost &threshold, bool start) const
+{
+    return !opt_->isCostBetterThan(threshold, solutionHeuristic2(motion, start));
+}
+
+void ompl::geometric::RRTBispace::getBiasData(base::PlannerData &data, bool start) const
+{
+    Planner::getPlannerData(data);
+
+    if (start)
+    {
+        for (std::size_t i = 0; i < startBiasStates_.size(); i++)
+        {
+            if (i == 0)
+                data.addStartVertex(base::PlannerDataVertex(startBiasStates_[i], 1));
+            else 
+                data.addEdge(base::PlannerDataVertex(startBiasStates_[i-1], 1), base::PlannerDataVertex(startBiasStates_[i], 1));
+        }
+    }
+    else
+    {
+        for (std::size_t i = 0; i < goalBiasStates_.size(); i++)
+        {
+            if (i == 0)
+                data.addStartVertex(base::PlannerDataVertex(goalBiasStates_[i], 2));
+            else 
+                data.addEdge(base::PlannerDataVertex(goalBiasStates_[i-1], 2), base::PlannerDataVertex(goalBiasStates_[i], 2));
+        }
+    }
+}
+
+ompl::base::Cost ompl::geometric::RRTBispace::solutionHeuristic2(Motion *motion, bool start) const
+{
+    base::Cost costToCome = calculateCostToCome(motion, start);
+
+    base::Cost costToGo = calculateCostToGo(motion, start);
+
+    return opt_->combineCosts(costToCome, costToGo);
+}
+
+ompl::base::Cost ompl::geometric::RRTBispace::calculateCostToCome(Motion *motion, bool start) const
+{
+    base::Cost costToCome = motion->cost;
+
+    if (!opt_->isFinite(costToCome))
+    {
+        costToCome = opt_->infiniteCost();
+
+        if (start)
+        {
+            for (auto & startMotion : startMotions_)
+                costToCome = opt_->betterCost(costToCome, opt_->motionCost(startMotion->state, motion->state));
+        }
+        else 
+        {
+            for (auto & goalMotion : goalMotions_)
+                costToCome = opt_->betterCost(costToCome, opt_->motionCost(motion->state, goalMotion->state));
+        }
+    }
+
+    return costToCome;
+}
+
+ompl::base::Cost ompl::geometric::RRTBispace::calculateCostToGo(Motion *motion, bool start) const
+{
+    base::Cost costToGo = opt_->infiniteCost();
+
+    if (start)
+    {
+        for (auto & goalMotion : goalMotions_)
+            costToGo = opt_->betterCost(costToGo, opt_->motionCost(motion->state, goalMotion->state));
+    }
+    else 
+    {
+        for (auto & startMotion : startMotions_)
+            costToGo = opt_->betterCost(costToGo, opt_->motionCost(startMotion->state, motion->state));
+    }
+
+    return costToGo;
+}
