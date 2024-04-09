@@ -224,6 +224,7 @@ void ompl::geometric::BiASEstar::clear()
         startBiasProb_ = goalBiasProb_ = 0.0;
     }
     */
+    solPath_.clear();
     bestStartMotion_ = nullptr;
     bestGoalMotion_ = nullptr;
 
@@ -408,9 +409,7 @@ ompl::base::PlannerStatus ompl::geometric::BiASEstar::solve(const base::PlannerT
     if (solved_ || optimal)
     {
         ptc.terminate();
-        if (!optimal)
-            isPathValid(bestStartMotion_, bestGoalMotion_);
-        processSolution(bestStartMotion_, bestGoalMotion_);
+        processSolution();
     }
 
     OMPL_INFORM("%s: Created %u states (%u start + %u goal). Final solution cost %.5f", getName().c_str(), tStart_->size() + tGoal_->size(),
@@ -524,9 +523,9 @@ ompl::base::PlannerStatus ompl::geometric::BiASEstar::prepareSolve(const base::P
     return base::PlannerStatus::PREPARE_SUCCESS;
 }
 
-void ompl::geometric::BiASEstar::processSolution(const Motion *bestStartMotion, const Motion *bestGoalMotion)
+void ompl::geometric::BiASEstar::processSolutionInternal(const Motion *bestStartMotion, const Motion *bestGoalMotion)
 {
-    std::vector<const base::State *> spath;
+    solPath_.clear();
 
     bool del = false;
     const Motion *solution = bestStartMotion;
@@ -543,20 +542,23 @@ void ompl::geometric::BiASEstar::processSolution(const Motion *bestStartMotion, 
     }
 
     for (std::size_t i = mpath1.size() - 1; i < mpath1.size(); i--)
-        spath.push_back(mpath1[i]);
+        solPath_.push_back(mpath1[i]);
 
     solution = bestGoalMotion;
     if (!del)
         solution = solution->parent;
     while (solution != nullptr)
     {
-        spath.push_back(solution->state);
+        solPath_.push_back(solution->state);
         solution = solution->parent;
     }
+}
 
+void ompl::geometric::BiASEstar::processSolution()
+{
     auto path(std::make_shared<PathGeometric>(si_));
-    path->getStates().reserve(spath.size());
-    for (auto & i : spath)
+    path->getStates().reserve(solPath_.size());
+    for (auto & i : solPath_)
         path->append(i);
 
     // Add the solution path.
@@ -1717,6 +1719,7 @@ void ompl::geometric::BiASEstar::getPlannerData(base::PlannerData &data) const
 bool ompl::geometric::BiASEstar::findBetterSolution(Motion *startAd, Motion *goalAd, bool &ad, bool ais, bool &clearoradd, bool &optimal)
 {
     bool updatedSolution = false;
+    bool stopImmediately = false;
     if (startAd)
     {
         base::Cost temp = opt_->combineCosts(startAd->cost, goalAd->cost);
@@ -1731,9 +1734,12 @@ bool ompl::geometric::BiASEstar::findBetterSolution(Motion *startAd, Motion *goa
                     bestCost_ = temp;
 
                     if (solved_)
+                    {
                         OMPL_INFORM("%s: Found a better solution with a cost of %.2f in %u iterations (%u "
                                 "vertices in the graph, %u start + %u goal)",
                                 getName().c_str(), bestCost_.value(), iterations_, tStart_->size() + tGoal_->size(), tStart_->size(), tGoal_->size());
+                        stopImmediately = true;
+                    }
                     else 
                     {
                         OMPL_INFORM("%s: Found an initial solution with a cost of %.2f in %u iterations (%u "
@@ -1751,6 +1757,7 @@ bool ompl::geometric::BiASEstar::findBetterSolution(Motion *startAd, Motion *goa
                     updatedSolution = true;
                     bestStartMotion_ = startAd;
                     bestGoalMotion_ = goalAd;
+                    processSolutionInternal(bestStartMotion_, bestGoalMotion_);
 
                     if (opt_->isSatisfied(bestCost_))
                         optimal = true;
@@ -1828,9 +1835,12 @@ bool ompl::geometric::BiASEstar::findBetterSolution(Motion *startAd, Motion *goa
                     {
                         bestCost_ = temp;
                         if (solved_)
+                        {
                             OMPL_INFORM("%s: Found a better solution with a cost of %.2f in %u iterations (%u "
                                     "vertices in the graph, %u start + %u goal)",
                                     getName().c_str(), bestCost_.value(), iterations_, tStart_->size() + tGoal_->size(), tStart_->size(), tGoal_->size());
+                            stopImmediately = true;
+                        }
                         else 
                         {
                             OMPL_INFORM("%s: Found an initial solution with a cost of %.2f in %u iterations (%u "
@@ -1848,6 +1858,7 @@ bool ompl::geometric::BiASEstar::findBetterSolution(Motion *startAd, Motion *goa
                         updatedSolution = true;
                         bestStartMotion_ = pair.first;
                         bestGoalMotion_ = pair.second;
+                        processSolutionInternal(bestStartMotion_, bestGoalMotion_);
 
                         if (opt_->isSatisfied(bestCost_))
                         {
@@ -1886,6 +1897,8 @@ bool ompl::geometric::BiASEstar::findBetterSolution(Motion *startAd, Motion *goa
             }
         }
     }
+
+    if (stopImmediately_ && stopImmediately) optimal = true;
 
     return updatedSolution;
 }

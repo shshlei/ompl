@@ -218,6 +218,7 @@ void ompl::geometric::BiHSCstar::clear()
 
     bestStartMotion_ = nullptr;
     bestGoalMotion_ = nullptr;
+    solPath_.clear();
 
     bestCost_ = base::Cost(std::numeric_limits<double>::quiet_NaN());
 
@@ -311,9 +312,7 @@ ompl::base::PlannerStatus ompl::geometric::BiHSCstar::solve(const base::PlannerT
     if (solved_ || optimal)
     {
         ptc.terminate();
-        if (!optimal)
-            isPathValid(bestStartMotion_, bestGoalMotion_);
-        processSolution(bestStartMotion_, bestGoalMotion_);
+        processSolution();
     }
 
     OMPL_INFORM("%s: Created %u states (%u start + %u goal). Final solution cost %.5f.", getName().c_str(), tStart_->size() + tGoal_->size(),
@@ -436,9 +435,9 @@ ompl::base::PlannerStatus ompl::geometric::BiHSCstar::prepareSolve(const base::P
     return base::PlannerStatus::PREPARE_SUCCESS;
 }
 
-void ompl::geometric::BiHSCstar::processSolution(const Motion *bestStartMotion, const Motion *bestGoalMotion)
+void ompl::geometric::BiHSCstar::processSolutionInternal(const Motion *bestStartMotion, const Motion *bestGoalMotion)
 {
-    std::vector<const base::State *> spath;
+    solPath_.clear();
 
     bool del = false;
     const Motion *solution = bestStartMotion;
@@ -455,20 +454,23 @@ void ompl::geometric::BiHSCstar::processSolution(const Motion *bestStartMotion, 
     }
 
     for (std::size_t i = mpath1.size() - 1; i < mpath1.size(); i--)
-        spath.push_back(mpath1[i]);
+        solPath_.push_back(mpath1[i]);
 
     solution = bestGoalMotion;
     if (!del)
         solution = solution->parent;
     while (solution != nullptr)
     {
-        spath.push_back(solution->state);
+        solPath_.push_back(solution->state);
         solution = solution->parent;
     }
+}
 
+void ompl::geometric::BiHSCstar::processSolution()
+{
     auto path(std::make_shared<PathGeometric>(si_));
-    path->getStates().reserve(spath.size());
-    for (auto & i : spath)
+    path->getStates().reserve(solPath_.size());
+    for (auto & i : solPath_)
         path->append(i);
 
     // Add the solution path.
@@ -2212,6 +2214,7 @@ bool ompl::geometric::BiHSCstar::findBetterSolution(bool &optimal) // todo
                     updatedSolution = true;
                     bestStartMotion_ = pair.first;
                     bestGoalMotion_ = pair.second;
+                    processSolutionInternal(bestStartMotion_, bestGoalMotion_);
 
                     if (opt_->isSatisfied(bestCost_))
                     {

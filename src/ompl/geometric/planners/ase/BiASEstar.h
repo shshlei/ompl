@@ -231,6 +231,16 @@ namespace ompl
                 return numSampleAttempts_;
             }
 
+            void setStopImmediately(bool stop)
+            {
+                stopImmediately_ = stop;
+            }
+
+            bool getStopImmediately() const
+            {
+                return stopImmediately_;
+            }
+
         protected:
 
             ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -446,7 +456,9 @@ namespace ompl
 
             base::PlannerStatus prepareSolve(const base::PlannerTerminationCondition &ptc);
 
-            void processSolution(const Motion *bestStartMotion, const Motion *bestGoalMotion);
+            void processSolutionInternal(const Motion *bestStartMotion, const Motion *bestGoalMotion);
+
+            void processSolution();
 
             /** feasible */
             bool growTree(TreeGrowingInfo &tgi, Motion *rmotion, bool &otherSide, bool &change, bool &add);
@@ -666,6 +678,8 @@ namespace ompl
 
             Motion *bestGoalMotion_{nullptr};
 
+            std::vector<const base::State *> solPath_;
+
             /** \brief Best cost found so far by algorithm */
             base::Cost bestCost_{std::numeric_limits<double>::quiet_NaN()};
 
@@ -864,6 +878,8 @@ namespace ompl
 
             /** \brief The status of the sample rejection parameter. */
             bool useRejectionSampling_{false};
+            
+            bool stopImmediately_{false};
 
             /** \brief The number of attempts to make at informed sampling */
             unsigned int numSampleAttempts_{100u};

@@ -138,11 +138,13 @@ bool ompl::geometric::PathSimplifier::reduceVertices(PathGeometric &path, unsign
     const base::SpaceInformationPtr &si = path.getSpaceInformation();
     std::vector<base::State *> &states = path.getStates();
 
-    if (si->checkMotion(states.front(), states.back()))
+    if (si->checkMotion(states.front(), states.back(), true))
     {
         if (freeStates_)
+        {
             for (std::size_t i = 2; i < states.size(); ++i)
                 si->freeState(states[i - 1]);
+        }
         std::vector<base::State *> newStates(2);
         newStates[0] = states.front();
         newStates[1] = states.back();
@@ -150,6 +152,7 @@ bool ompl::geometric::PathSimplifier::reduceVertices(PathGeometric &path, unsign
         result = true;
     }
     else
+    {
         for (unsigned int i = 0; i < maxSteps && nochange < maxEmptySteps; ++i, ++nochange)
         {
             int count = states.size();
@@ -174,13 +177,16 @@ bool ompl::geometric::PathSimplifier::reduceVertices(PathGeometric &path, unsign
             if (si->checkMotion(states[p1], states[p2]))
             {
                 if (freeStates_)
+                {
                     for (int j = p1 + 1; j < p2; ++j)
                         si->freeState(states[j]);
+                }
                 states.erase(states.begin() + p1 + 1, states.begin() + p2);
                 nochange = 0;
                 result = true;
             }
         }
+    }
     return result;
 }
 
@@ -648,8 +654,10 @@ bool ompl::geometric::PathSimplifier::collapseCloseVertices(PathGeometric &path,
             if (si->checkMotion(states[p1], states[p2]))
             {
                 if (freeStates_)
+                {
                     for (int i = p1 + 1; i < p2; ++i)
                         si->freeState(states[i]);
+                }
                 states.erase(states.begin() + p1 + 1, states.begin() + p2);
                 result = true;
                 nochange = 0;

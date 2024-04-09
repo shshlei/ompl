@@ -70,19 +70,19 @@ ompl::base::PathLengthDirectAdInfSampler::PathLengthDirectAdInfSampler(const Pro
         }
         else
         {
-            throw Exception("PathLengthDirectAdInfSampler only supports Unknown, RealVector, SE2, and SE3 StateSpaces.");
+            throw Exception("PathLengthDirectAdInfSampler only supports Unknown, RealVector, SE2, SE3, Dubins, ReedsShepp StateSpaces.");
         }
         informedSubSpace_ = AdInformedSampler::space_;
         uninformedSubSpace_ = StateSpacePtr();
         uninformedSubSampler_ = StateSamplerPtr();
     }
-    else if (AdInformedSampler::space_->getType() == STATE_SPACE_SE2 || AdInformedSampler::space_->getType() == STATE_SPACE_SE3)
+    else if (AdInformedSampler::space_->getType() == STATE_SPACE_SE2 || AdInformedSampler::space_->getType() == STATE_SPACE_SE3 ||
+            AdInformedSampler::space_->getType() == STATE_SPACE_DUBINS || AdInformedSampler::space_->getType() == STATE_SPACE_REEDS_SHEPP)
     {
         const CompoundStateSpace *compoundSpace = AdInformedSampler::space_->as<CompoundStateSpace>();
         if (compoundSpace->getSubspaceCount() != 2u)
         {
-            throw Exception("The provided compound StateSpace is SE(2) or SE(3) but does not have exactly "
-                            "2 subspaces.");
+            throw Exception("The provided compound StateSpace is SE(2) or SE(3) or Dubins or ReedsShepp but does not have exactly 2 subspaces.");
         }
         for (unsigned int idx = 0u; idx < compoundSpace->getSubspaceCount(); ++idx)
         {
@@ -100,7 +100,7 @@ ompl::base::PathLengthDirectAdInfSampler::PathLengthDirectAdInfSampler(const Pro
             }
             else
             {
-                throw Exception("The provided compound StateSpace is SE(2) or SE(3) but contains a "
+                throw Exception("The provided compound StateSpace is SE(2) or SE(3) or Dubins or ReedsShepp but contains a "
                                 "subspace that is not R^2, R^3, SO(2), or SO(3).");
             }
         }
@@ -112,7 +112,7 @@ ompl::base::PathLengthDirectAdInfSampler::PathLengthDirectAdInfSampler(const Pro
     {
         const CompoundStateSpace *compoundSpace = AdInformedSampler::space_->as<CompoundStateSpace>();
         if (compoundSpace->getSubspaceCount() != 1u)
-            throw Exception("PathLengthDirectAdInfSampler only supports RealVector, SE2 and SE3 statespaces.");
+            throw Exception("PathLengthDirectAdInfSampler only supports RealVector, SE2, SE3, Dubins, and ReedsShepp statespaces.");
         compound_ = true;
         if (compoundSpace->getSubspace(0)->getType() == STATE_SPACE_REAL_VECTOR)       
         {
@@ -122,12 +122,13 @@ ompl::base::PathLengthDirectAdInfSampler::PathLengthDirectAdInfSampler(const Pro
             uninformedSubSpace_ = StateSpacePtr();
             uninformedSubSampler_ = StateSamplerPtr();
         }
-        else if (compoundSpace->getSubspace(0)->getType() == STATE_SPACE_SE2 || compoundSpace->getSubspace(0)->getType() == STATE_SPACE_SE3)
+        else if (compoundSpace->getSubspace(0)->getType() == STATE_SPACE_SE2 || compoundSpace->getSubspace(0)->getType() == STATE_SPACE_SE3 ||
+                compoundSpace->getSubspace(0)->getType() == STATE_SPACE_DUBINS || compoundSpace->getSubspace(0)->getType() == STATE_SPACE_REEDS_SHEPP)
         {
             compoundCompound_ = true;
             const CompoundStateSpace *compoundCompoundSpace = compoundSpace->getSubspace(0)->as<CompoundStateSpace>();
             if (compoundCompoundSpace->getSubspaceCount() != 2u)
-                throw Exception("The provided compound compound StateSpace is SE(2) or SE(3) but does not have exactly 2 subspaces.");
+                throw Exception("The provided compound compound StateSpace is SE(2) or SE(3) or Dubins or ReedsShepp but does not have exactly 2 subspaces.");
             for (unsigned int idx = 0u; idx < compoundCompoundSpace->getSubspaceCount(); ++idx)
             {
                 if (compoundCompoundSpace->getSubspace(idx)->getType() == STATE_SPACE_REAL_VECTOR)
@@ -143,14 +144,14 @@ ompl::base::PathLengthDirectAdInfSampler::PathLengthDirectAdInfSampler(const Pro
                     uninformedIdx_ = idx;
                 }
                 else
-                    throw Exception("The provided compound compound StateSpace is SE(2) or SE(3) but contains a subspace that is not R^2, R^3, SO(2), or SO(3).");
+                    throw Exception("The provided compound compound StateSpace is SE(2) or SE(3) or Dubins or ReedsShepp but contains a subspace that is not R^2, R^3, SO(2), or SO(3).");
             }
             informedSubSpace_ = compoundCompoundSpace->getSubspace(informedIdx_);
             uninformedSubSpace_ = compoundCompoundSpace->getSubspace(uninformedIdx_);
             uninformedSubSampler_ = uninformedSubSpace_->allocStateSampler();           
         }
         else 
-            throw Exception("PathLengthDirectAdInfSampler only supports RealVector, SE2 and SE3 statespaces.");
+            throw Exception("PathLengthDirectAdInfSampler only supports RealVector, SE2, SE3, Dubins and ReedsShepp statespaces.");
     }
 
     std::vector<double> startFocusVector = getInformedSubstate(this->s1_);

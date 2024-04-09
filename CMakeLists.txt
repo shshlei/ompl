@@ -27,8 +27,6 @@ include(OMPLUtils)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/lib")
 
-set(OMPL_CMAKE_UTIL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/CMakeModules"
-    CACHE FILEPATH "Path to directory with auxiliary CMake scripts for OMPL")
 set(OMPL_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/src;${CMAKE_CURRENT_BINARY_DIR}/src")
 set(OMPL_DEMO_INSTALL_DIR "${CMAKE_INSTALL_DATAROOTDIR}/ompl/demos"
     CACHE STRING "Relative path to directory where demos will be installed")
@@ -52,23 +50,6 @@ set(Boost_NO_BOOST_CMAKE ON)
 find_package(Boost 1.58 QUIET REQUIRED COMPONENTS serialization filesystem system program_options)
 include_directories(SYSTEM ${Boost_INCLUDE_DIR})
 
-# Add support in Boost::Python for std::shared_ptr
-# This is a hack that replaces boost::shared_ptr related code with std::shared_ptr.
-# Proper support for std::shared_ptr was added in Boost 1.63.
-if (NOT Boost_VERSION_STRING)
-    if (Boost_VERSION_MAJOR)
-        set(Boost_VERSION_STRING
-            "${Boost_VERSION_MAJOR}.${Boost_VERSION_MINOR}.${Boost_VERSION_PATCH}")
-    else()
-        set(Boost_VERSION_STRING
-            "${Boost_MAJOR_VERSION}.${Boost_MINOR_VERSION}.${Boost_PATCH_VERSION}")
-    endif()
-endif()
-if(Boost_VERSION_STRING VERSION_LESS "1.63.0")
-    include_directories("${CMAKE_CURRENT_SOURCE_DIR}/src/external")
-endif()
-
-
 # on macOS we need to check whether to use libc++ or libstdc++ with clang++
 if(CMAKE_CXX_COMPILER_ID MATCHES "^(Apple)?Clang$")
     include(GetPrerequisites)
@@ -91,41 +72,11 @@ set_package_properties(Threads PROPERTIES
     PURPOSE "Pthreads is sometimes needed, depending on OS / compiler.")
 find_package(Threads QUIET)
 
-enable_testing()
-
-set_package_properties(Python PROPERTIES
-    URL "https://www.python.org"
-    PURPOSE "Used for python bindings.")
-find_package(Python QUIET)
-find_boost_python()
-
-if(PYTHON_FOUND)
-    set_package_properties(pypy PROPERTIES
-        URL "https://pypy.org"
-        PURPOSE "Used to speed up the generation of python bindings.")
-    find_package(pypy QUIET)
-endif()
-
 set_package_properties(Eigen3 PROPERTIES
     URL "http://eigen.tuxfamily.org"
     PURPOSE "A linear algebra library used throughout OMPL.")
 find_package(Eigen3 REQUIRED)
 include_directories("${EIGEN3_INCLUDE_DIR}")
-
-set_package_properties(MORSE PROPERTIES
-    URL "https://www.openrobots.org/wiki/morse"
-    PURPOSE "OMPL includes a plugin for the MORSE Robot Simulation engine.")
-find_package(MORSE QUIET)
-set(OMPL_EXTENSION_MORSE ${MORSE_FOUND})
-
-set_package_properties(ODE PROPERTIES
-    URL "http://ode.org"
-    PURPOSE "The Open Dynamics Engine can be used as a \"black box\" for kinodynamic planning.")
-find_package(ODE QUIET)
-set(OMPL_EXTENSION_ODE ${ODE_FOUND})
-if (OMPL_EXTENSION_ODE)
-  include_directories(${ODE_INCLUDE_DIRS})
-endif()
 
 set_package_properties(Triangle PROPERTIES
     URL "http://www.cs.cmu.edu/~quake/triangle.html"
@@ -146,41 +97,13 @@ if (FLANN_FOUND)
     link_directories(${FLANN_LIBRARY_DIRS})
 endif()
 
-set_package_properties(spot PROPERTIES
-    URL "http://spot.lrde.epita.fr"
-    PURPOSE "Used for constructing finite automata from LTL formulae.")
-find_package(spot)
-if (spot_FOUND)
-    set(OMPL_HAVE_SPOT 1)
-    include_directories("${SPOT_INCLUDE_DIRS}")
-    link_directories(${SPOT_LIBRARY_DIRS})
-endif()
-
 set_package_properties(Doxygen PROPERTIES
     URL "http://doxygen.org"
     PURPOSE "Used to create the OMPL documentation (i.e., https://ompl.kavrakilab.org).")
 find_package(Doxygen)
 
-# Numpy is used to convert Eigen matrices/vectors to numpy arrays
-if(PYTHON_FOUND AND NOT Boost_VERSION_STRING VERSION_LESS "1.63.0")
-    find_python_module(numpy)
-    if (PY_NUMPY)
-        find_boost_numpy()
-        if(Boost_NUMPY_LIBRARY)
-            set(OMPL_HAVE_NUMPY 1)
-            include_directories("${PY_NUMPY}/core/include")
-        endif()
-    endif()
-endif()
-
-# R is needed for running Planner Arena locally
-find_program(R_EXEC R)
-
 add_subdirectory(src)
-add_subdirectory(py-bindings)
-add_subdirectory(tests)
 add_subdirectory(demos)
-add_subdirectory(scripts)
 add_subdirectory(doc)
 
 if(NOT MSVC)
@@ -188,9 +111,6 @@ if(NOT MSVC)
     set(PKG_NAME "ompl")
     set(PKG_DESC "The Open Motion Planning Library")
     set(PKG_EXTERNAL_DEPS "eigen3 ${ompl_PKG_DEPS}")
-    if(OMPL_EXTENSION_ODE)
-        set(PKG_EXTERNAL_DEPS "${PKG_EXTERNAL_DEPS}")
-    endif()
     set(PKG_OMPL_LIBS "-lompl ${ompl_LINK_FLAGS}")
     configure_file("${CMAKE_CURRENT_SOURCE_DIR}/CMakeModules/ompl.pc.in"
                    "${CMAKE_CURRENT_BINARY_DIR}/ompl.pc" @ONLY)
@@ -216,10 +136,6 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/omplConfig.cmake
     DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/ompl/cmake
     COMPONENT ompl)
 
-# script to install ompl on Ubuntu
-configure_file("${CMAKE_CURRENT_SOURCE_DIR}/install-ompl-ubuntu.sh.in"
-  "${CMAKE_CURRENT_BINARY_DIR}/install-ompl-ubuntu.sh" @ONLY)
-
 # uninstall target
 configure_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/CMakeModules/cmake_uninstall.cmake.in"
@@ -229,19 +145,6 @@ add_custom_target(uninstall
   COMMAND ${CMAKE_COMMAND} -P "${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake")
 
 include(CPackSettings)
-
-option(OMPL_REGISTRATION "Enable one-time registration of OMPL" ON)
-if (OMPL_REGISTRATION)
-    find_file(OMPL_REGISTERED ".registered" PATHS "${CMAKE_CURRENT_SOURCE_DIR}" NO_DEFAULT_PATH)
-    if (NOT OMPL_REGISTERED)
-        file(WRITE "${CMAKE_CURRENT_SOURCE_DIR}/.registered" "")
-        find_package(Python QUIET)
-        if (PYTHON_FOUND)
-            execute_process(COMMAND "${PYTHON_EXEC}" "-m" "webbrowser" "https://ompl.kavrakilab.org/core/register.html"
-                OUTPUT_QUIET ERROR_QUIET)
-        endif()
-    endif()
-endif()
 
 # install catkin package.xml (needed for ROS installation)
 install(FILES package.xml
@@ -254,25 +157,4 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/share/ament_index/resource_index/packa
 set_package_properties(PkgConfig PROPERTIES
     URL "https://www.freedesktop.org/wiki/Software/pkg-config/"
     PURPOSE "Used to find (compilation flags for) dependencies.")
-set_package_properties(castxml PROPERTIES
-    URL "https://github.com/CastXML/CastXML"
-    PURPOSE "Used to generate Python bindings.")
 feature_summary(DESCRIPTION INCLUDE_QUIET_PACKAGES WHAT ALL)
-# additional feature info: show which Python modules were found and weren't found
-get_property(PY_MODULES_FOUND GLOBAL PROPERTY PY_MODULES_FOUND)
-if(PY_MODULES_FOUND)
-    list(REMOVE_DUPLICATES PY_MODULES_FOUND)
-    string(REPLACE ";" " " PY_MODULES_FOUND_STR "${PY_MODULES_FOUND}")
-    message(STATUS "The following Python modules were found:\n\n * ${PY_MODULES_FOUND_STR}\n")
-endif()
-get_property(PY_MODULES_NOTFOUND GLOBAL PROPERTY PY_MODULES_NOTFOUND)
-if(PY_MODULES_NOTFOUND)
-    list(REMOVE_DUPLICATES PY_MODULES_NOTFOUND)
-    string(REPLACE ";" " " PY_MODULES_NOTFOUND_STR "${PY_MODULES_NOTFOUND}")
-    message(STATUS "The following Python modules were NOT found:\n\n * ${PY_MODULES_NOTFOUND_STR}\n")
-endif()
-
-# Create targets for building docker images
-# See CMakeModules/OMPLUtils.cmake and scripts/docker for details
-add_docker_target(ompl)
-add_docker_target(plannerarena scripts)

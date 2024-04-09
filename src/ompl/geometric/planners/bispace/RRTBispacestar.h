@@ -431,7 +431,9 @@ namespace ompl
 
             base::PlannerStatus prepareSolve(const base::PlannerTerminationCondition &ptc);
 
-            void processSolution(const Motion *bestStartMotion, const Motion *bestGoalMotion);
+            void processSolutionInternal(const Motion *bestStartMotion, const Motion *bestGoalMotion);
+
+            void processSolution();
 
             bool batchGrow(bool &startTree);
 
@@ -673,6 +675,8 @@ namespace ompl
             Motion *bestStartMotion_{nullptr};
 
             Motion *bestGoalMotion_{nullptr};
+
+            std::vector<const base::State *> solPath_;
 
             /** \brief Best cost found so far by algorithm */
             base::Cost bestCost_{std::numeric_limits<double>::quiet_NaN()};

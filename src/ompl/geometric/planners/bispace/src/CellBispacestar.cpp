@@ -120,6 +120,7 @@ void ompl::geometric::CellBispacestar::clear()
 
     bestStartMotion_ = nullptr;
     bestGoalMotion_ = nullptr;
+    solPath_.clear();
 
     solved_ = false;
     iterations_ = 0;
@@ -196,13 +197,11 @@ ompl::base::PlannerStatus ompl::geometric::CellBispacestar::solve(const base::Pl
     if (solved_ || optimal)
     {
         ptc.terminate();
-        if (!optimal)
+        if (!optimal && lazyNode_)
         {
-            isPathValid(bestStartMotion_, bestGoalMotion_);
-            if (lazyNode_)
-                removeInvalidMotions();
+            removeInvalidMotions();
         }
-        processSolution(bestStartMotion_, bestGoalMotion_);
+        processSolution();
     }
 
     OMPL_INFORM("%s: Created %u (%u start + %u goal) states in %u cells (%u start + %u goal). Final solution cost %.5f.",
@@ -291,9 +290,9 @@ ompl::base::PlannerStatus ompl::geometric::CellBispacestar::prepareSolve(const b
     return base::PlannerStatus::PREPARE_SUCCESS;
 }
 
-void ompl::geometric::CellBispacestar::processSolution(const Motion *bestStartMotion, const Motion *bestGoalMotion)
+void ompl::geometric::CellBispacestar::processSolutionInternal(const Motion *bestStartMotion, const Motion *bestGoalMotion)
 {
-    std::vector<const base::State *> spath;
+    solPath_.clear();
 
     bool del = false;
     const Motion *solution = bestStartMotion;
@@ -310,20 +309,23 @@ void ompl::geometric::CellBispacestar::processSolution(const Motion *bestStartMo
     }
 
     for (std::size_t i = mpath1.size() - 1; i < mpath1.size(); i--)
-        spath.push_back(mpath1[i]);
+        solPath_.push_back(mpath1[i]);
 
     solution = bestGoalMotion;
     if (!del)
         solution = solution->parent;
     while (solution != nullptr)
     {
-        spath.push_back(solution->state);
+        solPath_.push_back(solution->state);
         solution = solution->parent;
     }
+}
 
+void ompl::geometric::CellBispacestar::processSolution()
+{
     auto path(std::make_shared<PathGeometric>(si_));
-    path->getStates().reserve(spath.size());
-    for (auto & i : spath)
+    path->getStates().reserve(solPath_.size());
+    for (auto & i : solPath_)
         path->append(i);
 
     // Add the solution path.
@@ -1274,6 +1276,7 @@ bool ompl::geometric::CellBispacestar::findBetterSolution(bool &optimal)
                     updatedSolution = true;
                     bestStartMotion_ = pair.first;
                     bestGoalMotion_ = pair.second;
+                    processSolutionInternal(bestStartMotion_, bestGoalMotion_);
                     if (opt_->isSatisfied(bestCost_))
                     {
                         optimal = true;
