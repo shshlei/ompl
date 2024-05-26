@@ -39,6 +39,12 @@
 #include "ompl/base/objectives/PathLengthOptimizationObjective.h"
 #include "ompl/tools/config/SelfConfig.h"
 
+#include <ompl/base/spaces/SE2StateSpace.h>
+#include <fstream>
+#include <boost/filesystem.hpp>
+#include <boost/algorithm/string.hpp>
+#include <boost/format.hpp>
+
 ompl::geometric::BiHSC::BiHSC(const base::SpaceInformationPtr &si) : base::Planner(si, "BiHSC")
   , dStart_(0), dGoal_(0), mc_(opt_), bh_(mc_)
 {
@@ -222,6 +228,8 @@ ompl::base::PlannerStatus ompl::geometric::BiHSC::solve(const base::PlannerTermi
     bool solved = false;
     Motion *bestStartMotion = nullptr;
     Motion *bestGoalMotion = nullptr;
+
+    std::size_t i = 0;
     while (!ptc)
     {
         if (pis_.getSampledGoalsCount() < tGoal_->size() / 2)
@@ -270,7 +278,36 @@ ompl::base::PlannerStatus ompl::geometric::BiHSC::solve(const base::PlannerTermi
         {
             if (opt_->isFinite(pair.first->cost) && opt_->isFinite(pair.second->cost))
             {
-                if (isPathValid(pair.first, pair.second))
+                std::ofstream ofs(boost::str(boost::format("safety_circles_%i.txt") % i).c_str());
+                for (auto & sc : ssnne_)
+                {
+                    const auto* se2state = sc->sc->state->as<ompl::base::SE2StateSpace::StateType>();
+                    ofs << se2state->getX() << " " << se2state->getY() << " " << sc->sc->confidence_[0] << " " << std::endl; 
+                }
+                for (auto & sc : gsnne_)
+                {
+                    const auto* se2state = sc->sc->state->as<ompl::base::SE2StateSpace::StateType>();
+                    ofs << se2state->getX() << " " << se2state->getY() << " " << sc->sc->confidence_[0] << " " << std::endl; 
+                }
+                ofs.close();
+                
+                bool success = isPathValid(pair.first, pair.second);
+
+                ofs.open(boost::str(boost::format("safety_circles_recheck_%i.txt") % i).c_str());
+                for (auto & sc : ssnne_)
+                {
+                    const auto* se2state = sc->sc->state->as<ompl::base::SE2StateSpace::StateType>();
+                    ofs << se2state->getX() << " " << se2state->getY() << " " << sc->sc->confidence_[0] << " " << std::endl; 
+                }
+                for (auto & sc : gsnne_)
+                {
+                    const auto* se2state = sc->sc->state->as<ompl::base::SE2StateSpace::StateType>();
+                    ofs << se2state->getX() << " " << se2state->getY() << " " << sc->sc->confidence_[0] << " " << std::endl; 
+                }
+                ofs.close();
+                i++;
+
+                if (success)
                 {
                     solved = true;
                     bestStartMotion = pair.first;

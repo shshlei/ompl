@@ -108,10 +108,11 @@ ompl::ProlateHyperspheroid::ProlateHyperspheroid(unsigned int n, const double fo
 
 void ompl::ProlateHyperspheroid::setTransverseDiameter(double transverseDiameter)
 {
-    if (transverseDiameter < dataPtr_->minTransverseDiameter_)
+    while (transverseDiameter < dataPtr_->minTransverseDiameter_)
     {
-        OMPL_ERROR("%g < %g", transverseDiameter, dataPtr_->minTransverseDiameter_);
-        throw Exception("Transverse diameter cannot be less than the distance between the foci.");
+        transverseDiameter *= 1.1;
+        // OMPL_ERROR("%g < %g", transverseDiameter, dataPtr_->minTransverseDiameter_);
+        // throw Exception("Transverse diameter cannot be less than the distance between the foci.");
     }
 
     // Store and update if changed

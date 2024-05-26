@@ -782,6 +782,8 @@ namespace ompl
             unsigned int certificateDim_{1u};
 
             bool useCollisionCertificateChecker_{false};
+
+            std::size_t safety_i_{0};
         };
     }
 }

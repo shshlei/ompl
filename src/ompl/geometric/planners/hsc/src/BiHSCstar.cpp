@@ -39,6 +39,12 @@
 #include "ompl/base/objectives/PathLengthOptimizationObjective.h"
 #include "ompl/tools/config/SelfConfig.h"
 
+#include <ompl/base/spaces/SE2StateSpace.h>
+#include <fstream>
+#include <boost/filesystem.hpp>
+#include <boost/algorithm/string.hpp>
+#include <boost/format.hpp>
+
 ompl::geometric::BiHSCstar::BiHSCstar(const base::SpaceInformationPtr &si) : base::Planner(si, "BiHSCstar")
   , dStart_(0), dGoal_(0), mc_(opt_), bh_(mc_)
 {
@@ -2186,7 +2192,36 @@ bool ompl::geometric::BiHSCstar::findBetterSolution(bool &optimal) // todo
         base::Cost temp = opt_->combineCosts(pair.first->cost, pair.second->cost);
         if (opt_->isFinite(temp) && opt_->isCostBetterThan(temp, bestCost_))
         {
-            if (isPathValid(pair.first, pair.second))
+            std::ofstream ofs(boost::str(boost::format("safety_circles_%i.txt") % safety_i_).c_str());
+            for (auto & sc : ssnne_)
+            {
+                const auto* se2state = sc->sc->state->as<ompl::base::SE2StateSpace::StateType>();
+                ofs << se2state->getX() << " " << se2state->getY() << " " << sc->sc->confidence_[0] << " " << std::endl; 
+            }
+            for (auto & sc : gsnne_)
+            {
+                const auto* se2state = sc->sc->state->as<ompl::base::SE2StateSpace::StateType>();
+                ofs << se2state->getX() << " " << se2state->getY() << " " << sc->sc->confidence_[0] << " " << std::endl; 
+            }
+            ofs.close();
+            
+            bool success = isPathValid(pair.first, pair.second);
+
+            ofs.open(boost::str(boost::format("safety_circles_recheck_%i.txt") % safety_i_).c_str());
+            for (auto & sc : ssnne_)
+            {
+                const auto* se2state = sc->sc->state->as<ompl::base::SE2StateSpace::StateType>();
+                ofs << se2state->getX() << " " << se2state->getY() << " " << sc->sc->confidence_[0] << " " << std::endl; 
+            }
+            for (auto & sc : gsnne_)
+            {
+                const auto* se2state = sc->sc->state->as<ompl::base::SE2StateSpace::StateType>();
+                ofs << se2state->getX() << " " << se2state->getY() << " " << sc->sc->confidence_[0] << " " << std::endl; 
+            }
+            ofs.close();
+            safety_i_++;
+
+            if (success)
             {
                 temp = opt_->combineCosts(pair.first->cost, pair.second->cost);
                 if (opt_->isCostBetterThan(temp, bestCost_))
